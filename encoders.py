@@ -1,6 +1,5 @@
-from rdkit import Chem    
-from rdkit.Chem.Fingerprints import FingerprintMols    
-from rdkit.DataStructs import FingerprintSimilarity    
+from rdkit import Chem
+from rdkit.DataStructs import FingerprintSimilarity
 from rdkit.DataStructs.cDataStructs import ExplicitBitVect
 from rdkit.Chem import AllChem
 
