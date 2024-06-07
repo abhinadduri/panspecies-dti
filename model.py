@@ -4,6 +4,64 @@ from torch import nn
 import pytorch_lightning as pl
 import torchmetrics
 
+class FeedForward(nn.Module):
+    def __init__(self, dim, hidden_dim, dropout = 0.):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.LayerNorm(dim),
+            nn.Linear(dim, hidden_dim),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(hidden_dim, dim),
+            nn.Dropout(dropout)
+        )
+
+    def forward(self, x):
+        return self.net(x)
+
+class Attention(nn.Module):
+    def __init__(self, embed_dim, num_heads, dim_heads, dropout=0.0, **kwargs):
+        super().__init__()
+        self.heads = num_heads
+        self.inner_dim = num_heads * dim_head
+        self.to_qkv = nn.Linear(embed_dim, inner_dim * 3, bias=False)
+        self.multihead_attn = nn.MultiheadAttention(inner_dim, num_heads, dropout=dropout, **kwargs)
+
+    def forward(self, x):
+        q, k, v = self.to_qkv(x).chunk(3, dim=-1)
+        return self.multihead_attn(q, k , v)[0]
+
+class Transformer(nn.Module):
+    def __init__(self, dim, depth, heads, dim_head, mlp_dim, dropout = 0.):
+        super().__init__()
+        self.norm = nn.LayerNorm(dim)
+        self.layers = nn.ModuleList([])
+        for _ in range(depth):
+            self.layers.append(nn.ModuleList([
+                Attention(dim, num_heads = heads, dim_head = dim_head, dropout = dropout),
+                FeedForward(dim, mlp_dim, dropout = dropout)
+            ]))
+
+    def forward(self, x):
+        for attn, ff in self.layers:
+            x = attn(x) + x
+            x = ff(x) + x
+
+        return self.norm(x)
+
+class TargetEmbedding(nn.Module):
+    def __init__(self, embedding_dim, hidden_dim, num_layers, dropout = 0.):
+        super().__init__()
+        self.cls_token = nn.Parameter(torch.randn(1, 1, self.input_size))
+        self.transformer = Transformer(embedding_dim, num_layers, 8, 64, hidden_dim, dropout = dropout)
+
+    def forward(self, x):
+        b, n, _ = x.shape
+
+        cls_tokens = repeat(self.cls_token, '1 1 d -> b 1 d', b = b)
+        x = torch.cat((cls_tokens, x), dim=1)
+        x = self.transformer(x)
+        return x[:,0]
 
 class DrugTargetCoembeddingLightning(pl.LightningModule):
     def __init__(
@@ -13,6 +71,8 @@ class DrugTargetCoembeddingLightning(pl.LightningModule):
         latent_dim=1024,
         activation=nn.ReLU,
         classify=True,
+        num_layers_target=1,
+        dropout=0,
         lr=1e-4,
     ):
         super().__init__()
@@ -30,7 +90,7 @@ class DrugTargetCoembeddingLightning(pl.LightningModule):
         )
 
         self.target_projector = nn.Sequential(
-            nn.Linear(self.target_dim, self.latent_dim), self.activation()
+            TargetEmbedding( self.target_dim, self.latent_dim, num_layers_target, dropout=dropout), self.activation()
         )
 
         if self.classify:
