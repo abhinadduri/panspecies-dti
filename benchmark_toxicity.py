@@ -85,7 +85,7 @@ def run_mlp(X_train, y_train, X_test):
         return all_outputs
 
 
-def run_logistic(X_train, y_train, X_test):
+def run_lr(X_train, y_train, X_test):
     # logistic = LogisticRegression(max_iter=1000, penalty='l1', solver='liblinear')
     logistic = LogisticRegression(max_iter=1000)
     logistic.fit(X_train, y_train)
@@ -94,38 +94,19 @@ def run_logistic(X_train, y_train, X_test):
 
 
 def main(label_file, embedding_file, embedding_type, model):
-    # Load dataframe of moltoxpred data smiles and toxicity label
+    """
+    Runs a 5-fold cross-validation experiment using the specified classifier model on the embedding data to predict labels. 
+    """
+    # Load and process data
     df = pd.read_csv(label_file, sep='\t', header=None, names=['ID', 'SMILES', 'Class'])
-    # smiles_labels = {smiles: label for smiles, label in zip(df['SMILES'], df['Class'])}
     labels = [label for label in df['Class']]
-
-    # # Load the morgan fingerprint embeddings
-    # if os.path.exists('benchmark_data/morgan_moltox_embeddings.npy'):
-    #     morgan_embeddings = np.load('benchmark_data/morgan_moltox_embeddings.npy')
-    # else:
-    #     morgan_embeddings = np.array([get_fingerprint(smiles) for smiles in df['SMILES']])
-    #     np.save('benchmark_data/morgan_moltox_embeddings.npy', morgan_embeddings)
-
-    # smiles_morgan_embeddings = {smiles: get_fingerprint(smiles) for smiles in df['SMILES']}
     morgan_embeddings = [get_fingerprint(smiles) for smiles in df['SMILES']]
-
-    # Load the ConPLeX embeddings
-    data = np.load(embedding_file, allow_pickle=True)
-    # smiles_conplex_embeddings = {smiles: embedding for smiles, embedding in zip(data['proteinID'], data['embedding'])}
-    conplex_embeddings = [embedding for embedding in data['embedding']]
-
-    # labels = []
-    # morgan_embeddings = []
-    # conplex_embeddings = []
-    # for smiles in smiles_labels.keys():
-    #     if smiles not in smiles_morgan_embeddings or smiles not in smiles_conplex_embeddings:
-    #         continue
-    #     labels.append(smiles_labels[smiles])
-    #     morgan_embeddings.append(smiles_morgan_embeddings[smiles])
-    #     conplex_embeddings.append(smiles_conplex_embeddings[smiles])
+    conplex_data = np.load(embedding_file, allow_pickle=True)
+    conplex_embeddings = [embedding for embedding in conplex_data['embedding']]
     assert len(labels) == len(morgan_embeddings) == len(conplex_embeddings)
-    toxicity = np.array(labels)
+    labels = np.array(labels)
 
+    # Choose embedding type
     if embedding_type == 'morgan':
         data_embeddings = np.array(morgan_embeddings)
     elif embedding_type == 'conplex':
@@ -134,25 +115,28 @@ def main(label_file, embedding_file, embedding_type, model):
         data_embeddings = np.concatenate([morgan_embeddings, conplex_embeddings], axis=1) 
     else:
         raise ValueError('Invalid embedding type')
-    
+
+    # Choose classifier model 
     if model == 'rf':
         run_model = run_rf
     elif model == 'mlp':
         run_model = run_mlp
-    elif model == 'logistic':
-        run_model = run_logistic
+    elif model == 'lr':
+        run_model = run_lr
     else:
         raise ValueError('Invalid model type')
 
     # Setup cross-validation
     kf = StratifiedKFold(n_splits=5, shuffle=True, random_state=64)
     results = []
-
-    for train_index, test_index in tqdm(kf.split(data_embeddings, toxicity)):
+    for train_index, test_index in tqdm(kf.split(data_embeddings, labels)):
         X_train, X_test = data_embeddings[train_index], data_embeddings[test_index]
-        y_train, y_test = toxicity[train_index], toxicity[test_index]
+        y_train, y_test = labels[train_index], labels[test_index]
 
+        # Run model
         preds_proba = run_model(X_train, y_train, X_test)
+
+        # Evaluate predictions
         preds_binary = preds_proba > 0.5
         auroc = roc_auc_score(y_test, preds_proba)
         accuracy = accuracy_score(y_test, preds_binary)
@@ -176,6 +160,7 @@ def main(label_file, embedding_file, embedding_type, model):
     print(f'Accuracy:\t{avg_accuracy}\t({std_accuracy})')
     print(f'AUROC:\t\t{avg_auroc}\t({std_auroc})')
     print(f'F1:\t\t{avg_f1}\t({std_f1})')
+    return results
 
 
 if __name__ == '__main__':
@@ -183,6 +168,6 @@ if __name__ == '__main__':
     parser.add_argument('--embeddings', type=str, default='benchmark_data/moltoxpred_conplex_embeddings.npz')
     parser.add_argument('--labels', type=str, default='benchmark_data/moltoxpred_data_processed.tsv')
     parser.add_argument('--embedding_type', type=str, default='combined', help='conplex, morgan, or combined')
-    parser.add_argument('--model', type=str, default='rf', help='rf or mlp or logistic')
+    parser.add_argument('--model', type=str, default='rf', help='rf or mlp or lr')
     args = parser.parse_args()
     main(args.labels, args.embeddings, args.embedding_type, args.model)
