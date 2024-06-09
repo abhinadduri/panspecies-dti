@@ -20,25 +20,40 @@ class FeedForward(nn.Module):
         return self.net(x)
 
 class Attention(nn.Module):
-    def __init__(self, embed_dim, num_heads, dim_heads, dropout=0.0, **kwargs):
+    """
+    A single layer of multi-head self-attention.
+    """
+    def __init__(self, embed_dim, num_heads, head_dim, dropout=0.0, **kwargs):
         super().__init__()
         self.heads = num_heads
-        self.inner_dim = num_heads * dim_head
-        self.to_qkv = nn.Linear(embed_dim, inner_dim * 3, bias=False)
-        self.multihead_attn = nn.MultiheadAttention(inner_dim, num_heads, dropout=dropout, **kwargs)
+        self.inner_dim = num_heads * head_dim
+        self.to_qkv = nn.Linear(embed_dim, self.inner_dim * 3, bias=False)
+        self.multihead_attn = nn.MultiheadAttention(self.inner_dim, num_heads, dropout=dropout, **kwargs)
 
     def forward(self, x):
         q, k, v = self.to_qkv(x).chunk(3, dim=-1)
         return self.multihead_attn(q, k , v)[0]
 
 class Transformer(nn.Module):
-    def __init__(self, dim, depth, heads, dim_head, mlp_dim, dropout = 0.):
+    """
+    Layers of self-attention after appending a CLS token to the input.
+
+    The input to this module is expected to be the frozen embeddings of a protein foundation model,
+    such as ProtBert or ESM. 
+
+    `dim` is the dimension of the embeddings.
+    `depth` is the number of transformer layers.
+    `num_heads` is the number of heads in the multi-head attention.
+    `head_dim` is the dimension of the heads.
+    `mlp_dim` is the hidden dimension of the feed forward network. 
+    """
+    def __init__(self, dim, depth, num_heads, head_dim, mlp_dim, dropout = 0.):
         super().__init__()
         self.norm = nn.LayerNorm(dim)
         self.layers = nn.ModuleList([])
         for _ in range(depth):
             self.layers.append(nn.ModuleList([
-                Attention(dim, num_heads = heads, dim_head = dim_head, dropout = dropout),
+                Attention(dim, num_heads, head_dim, dropout = dropout),
                 FeedForward(dim, mlp_dim, dropout = dropout)
             ]))
 
@@ -52,13 +67,20 @@ class Transformer(nn.Module):
 class TargetEmbedding(nn.Module):
     def __init__(self, embedding_dim, hidden_dim, num_layers, dropout = 0.):
         super().__init__()
-        self.cls_token = nn.Parameter(torch.randn(1, 1, self.input_size))
-        self.transformer = Transformer(embedding_dim, num_layers, 8, 64, hidden_dim, dropout = dropout)
+        self.embedding_dim = embedding_dim
+        self.hidden_dim = hidden_dim
+        self.num_layers = num_layers
+        self.cls_token = nn.Parameter(torch.randn(1, 1, self.embedding_dim))
+        self.transformer = Transformer(embedding_dim, num_layers, 8, embedding_dim // 8, hidden_dim, dropout = dropout)
 
     def forward(self, x):
+        """
+        Returns the embedding of the CLS token after passing through the transformer.
+        """
         b, n, _ = x.shape
 
-        cls_tokens = repeat(self.cls_token, '1 1 d -> b 1 d', b = b)
+        # cls_tokens = repeat(self.cls_token, '1 1 d -> b 1 d', b = b)
+        cls_tokens = self.cls_token.repeat(b, 1, 1)
         x = torch.cat((cls_tokens, x), dim=1)
         x = self.transformer(x)
         return x[:,0]
@@ -164,3 +186,19 @@ class DrugTargetCoembeddingLightning(pl.LightningModule):
         for name, metric in self.metrics.items():
             metric(outputs["preds"], outputs["target"])
             self.log(f"val/{name}", metric)
+
+def main():
+    from featurizers import ProtBertFeaturizer
+    protbert = ProtBertFeaturizer()
+
+    out = torch.stack([protbert("AGGA"), protbert("AGGA")], dim=0)
+    model = TargetEmbedding(1024, 1024, 2)
+
+    # Testing to make sure a forward pass works
+    print(model(out).shape)
+
+if __name__ == "__main__":
+    main()
+
+
+

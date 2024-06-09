@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import h5py
 import torch
 import numpy as np
@@ -14,9 +16,7 @@ def sanitize_string(s):
     return s.replace("/", "|")
 
 class Featurizer:
-    def __init__(
-        self, name: str, shape: int, save_dir: Path = Path().absolute()
-    ):
+    def __init__(self, name: str, shape: int, save_dir: Path=Path().absolute()):
         self._name = name
         self._shape = shape
         self._save_path = save_dir / Path(f"{self._name}_features.h5")
@@ -49,10 +49,10 @@ class Featurizer:
                 try:
                     self._cuda_registry[k] = (v.to(self._device), None)
                 except RuntimeError as e:
-                    logg.error(e)
-                    logg.debug(device)
-                    logg.debug(type(self._device))
-                    logg.debug(self._device)
+                    print(e)
+                    print(device)
+                    print(type(self._device))
+                    print(self._device)
             else:
                 self._cuda_registry[k] = (f(v, self._device), f)
         for k, v in self._features.items():
@@ -112,14 +112,20 @@ class Featurizer:
         return self
 
     def write_to_disk(
-        self, seq_list: T.List[str], verbose: bool = True
+        self, seq_list: T.List[str], verbose: bool = True, file_path: Path = None
     ) -> None:
-        logg.info(f"Writing {self.name} features to {self.path}")
-        with h5py.File(self._save_path, "a") as h5fi:
+        if file_path is not None:
+            # this is easier for now than changing the code above
+            out_path = file_path
+        else:
+            out_path = self._save_path
+
+        print(f"Writing {self.name} features to {out_path}")
+        with h5py.File(file_path, "a") as h5fi:
             for seq in tqdm(seq_list, disable=not verbose, desc=self.name):
                 seq_h5 = sanitize_string(seq)
                 if seq_h5 in h5fi:
-                    logg.warning(f"{seq} already in h5file")
+                    print(f"{seq} already in h5file")
                 feats = self.transform(seq)
                 dset = h5fi.require_dataset(seq_h5, feats.shape, np.float32)
                 dset[:] = feats.cpu().numpy()
@@ -130,7 +136,7 @@ class Featurizer:
         verbose: bool = True,
         write_first: bool = True,
     ) -> None:
-        logg.info(f"Preloading {self.name} features from {self.path}")
+        print(f"Preloading {self.name} features from {self.path}")
 
         if write_first and not self._save_path.exists():
             self.write_to_disk(seq_list, verbose=verbose)
@@ -193,10 +199,8 @@ class MorganFeaturizer(Featurizer):
             features = np.zeros((1,))
             DataStructs.ConvertToNumpyArray(features_vec, features)
         except Exception as e:
-            logg.error(
-                f"rdkit not found this smiles for morgan: {smile} convert to all 0 features"
-            )
-            logg.error(e)
+            print(f"rdkit not found this smiles for morgan: {smile} convert to all 0 features")
+            print(e)
             features = np.zeros((self.shape,))
         return features
 
@@ -206,7 +210,7 @@ class MorganFeaturizer(Featurizer):
             torch.from_numpy(self.smiles_to_morgan(smile)).squeeze().float()
         )
         if feats.shape[0] != self.shape:
-            logg.warning("Failed to featurize: appending zero vector")
+            print("Failed to featurize: appending zero vector")
             feats = torch.zeros(self.shape)
         return feats
 
@@ -221,11 +225,11 @@ class ProtBertFeaturizer(Featurizer):
         self._protbert_tokenizer = AutoTokenizer.from_pretrained(
             "Rostlab/prot_bert",
             do_lower_case=False,
-            cache_dir=f"{MODEL_CACHE_DIR}/huggingface/transformers",
+            cache_dir=f"models/huggingface/transformers",
         )
         self._protbert_model = AutoModel.from_pretrained(
             "Rostlab/prot_bert",
-            cache_dir=f"{MODEL_CACHE_DIR}/huggingface/transformers",
+            cache_dir=f"models/huggingface/transformers",
         )
         self._protbert_feat = pipeline(
             "feature-extraction",
@@ -261,9 +265,7 @@ class ProtBertFeaturizer(Featurizer):
         if len(seq) > self._max_len - 2:
             seq = seq[: self._max_len - 2]
 
-        embedding = torch.tensor(
-            self._cuda_registry["featurizer"][0](self._space_sequence(seq))
-        )
+        embedding = torch.tensor(self._cuda_registry["featurizer"][0](self._space_sequence(seq)))
         seq_len = len(seq)
         start_Idx = 1
         end_Idx = seq_len + 1
@@ -271,4 +273,6 @@ class ProtBertFeaturizer(Featurizer):
 
         if self.per_tok:
             return feats
-        return feats.mean(0)
+
+        # return the entire embedding
+        return feats
