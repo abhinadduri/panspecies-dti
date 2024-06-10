@@ -1,4 +1,5 @@
 import argparse
+import pandas as pd
 
 from featurizers import ProtBertFeaturizer
 
@@ -16,14 +17,11 @@ def main(data_file: str):
     out_file = data_file + ".prot.h5"
     prot_list = []
 
-    f = open(data_file)
-    headers = next(f)
-    assert headers.strip().split(',')[-1] == "Target Sequence"
+    df = pd.read_csv(data_file)
+    headers = df.columns
+    assert "Target Sequence" in headers
 
-    for line in f:
-        prot_seq = line.strip().split(',')[-1]
-        prot_list.append(prot_seq)
-
+    prot_list = df["Target Sequence"].to_list()
 
     protbert.write_to_disk(prot_list, file_path=out_file)
 
