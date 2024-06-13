@@ -1,3 +1,4 @@
+import os
 import numpy as np
 import pandas as pd
 
@@ -24,7 +25,7 @@ from utils import get_featurizer
 
 parser = argparse.ArgumentParser(description="PLM_DTI Training.")
 parser.add_argument("--exp-id", required=True, help="Experiment ID", dest="experiment_id")
-parser.add_argument("--config", help="YAML config file", default="configs/default_config.yaml")
+parser.add_argument("--config", help="YAML config file", default="default_config.yaml")
 parser.add_argument("--wandb-proj", help="Weights and Biases Project",dest="wandb_proj")
 parser.add_argument("--task", choices=[
     "biosnap",
@@ -42,7 +43,7 @@ parser.add_argument("--epochs", type=int, help="number of total epochs to run")
 parser.add_argument("--lr", "--learning-rate", type=float, help="initial learning rate", dest="lr",)
 parser.add_argument("--clr", type=float, help="initial learning rate", dest="clr")
 parser.add_argument("--r", "--replicate", type=int, help="Replicate", dest="replicate")
-parser.add_argument("--d", "--device", type=int, help="CUDA device", dest="device")
+parser.add_argument("--d", "--device", default=0, type=int, help="CUDA device", dest="device")
 parser.add_argument("--verbosity", type=int, help="Level at which to log", dest="verbosity")
 parser.add_argument("--checkpoint", default=None, help="Model weights to start from")
 
@@ -54,7 +55,7 @@ config = OmegaConf.load(args.config)
 args_overrides = {k: v for k, v in vars(args).items() if v is not None}
 config.update(args_overrides)
 
-save_dif = f'{config.get("model_save_dir", ".")}/{config.experiment_id}'
+save_dir = f'{config.get("model_save_dir", ".")}/{config.experiment_id}'
 os.makedirs(save_dir, exist_ok=True)
 
 # Set CUDA device
