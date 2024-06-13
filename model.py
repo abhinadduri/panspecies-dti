@@ -1,5 +1,7 @@
 import torch
 from torch import nn
+import torch.nn.functional as F
+from .contrastive_loss import MarginScheduledLossFunction
 
 import pytorch_lightning as pl
 import torchmetrics
@@ -96,16 +98,20 @@ class DrugTargetCoembeddingLightning(pl.LightningModule):
         num_layers_target=1,
         dropout=0,
         lr=1e-4,
+        contrastive=False,
+        args=None,
     ):
         super().__init__()
 
+        self.automatic_optimization = False # We will handle the optimization step ourselves
         self.drug_dim = drug_dim
         self.target_dim = drug_dim
         self.latent_dim = latent_dim
         self.activation = activation
 
         self.classify = classify
-        self.lr = lr
+        self.contrastive = contrastive
+        self.args = args
 
         self.drug_projector = nn.Sequential(
             nn.Linear(self.drug_dim, self.latent_dim), self.activation()
@@ -116,6 +122,7 @@ class DrugTargetCoembeddingLightning(pl.LightningModule):
         )
 
         if self.classify:
+            self.sigmoid = nn.Sigmoid()
             self.val_accuracy = torchmetrics.Accuracy()
             self.val_aupr = torchmetrics.AveragePrecision()
             self.val_auroc = torchmetrics.AUROC()
@@ -126,17 +133,27 @@ class DrugTargetCoembeddingLightning(pl.LightningModule):
                 "auroc": self.val_auroc,
                 "f1": self.val_f1,
             }
+            self.loss_fct = torch.nn.BCELoss()
         else:
             self.val_mse = torchmetrics.MeanSquaredError()
             self.val_pcc = torchmetrics.PearsonCorrCoef()
             self.metrics = {"mse": self.val_mse, "pcc": self.val_pcc}
+            self.loss_fct = torch.nn.MSELoss()
+
+        if self.contrastive:
+            self.contrastive_loss_fct = MarginScheduledLossFunction(
+                    M_0 = args.margin_max,
+                    N_epoch = args.epochs,
+                    N_restart = args.margin_t0,
+                    update_fn = args.margin_fn
+                    )
 
     def forward(self, drug, target):
         drug_projection = self.drug_projector(drug)
         target_projection = self.target_projector(target)
 
         if self.classify:
-            similarity = nn.CosineSimilarity()(
+            similarity = F.cosine_similarity(
                 drug_projection, target_projection
             )
         else:
@@ -148,37 +165,80 @@ class DrugTargetCoembeddingLightning(pl.LightningModule):
         return similarity
 
     def configure_optimizers(self):
-        optimizer = torch.optim.Adam(self.parameters(), lr=self.lr)
-        return optimizer
+        optimizers, lr_schedulers = [], []
+        optimizer = torch.optim.Adam(self.parameters(), lr=self.args.lr)
+        lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
+            opt, T_0= self.args.lr_t0
+            )
+        optimizers.append(optimizer)
+        lr_schedulers.append(lr_scheduler)
+        if self.contrastive:
+            opt_contrastive = torch.optim.Adam(self.parameters(), lr=self.args.clr)
+            lr_scheduler_contrastive = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
+                opt_contrastive, T_0=self.args.clr_t0
+            )
+            optimizers.append(opt_contrastive)
+            lr_schedulers.append(lr_scheduler_contrastive)
+        return optimizers, lr_schedulers
 
-    def training_step(self, train_batch, batch_idx):
+    def contrastive_step(self, batch):
+
+        anchor, positive, negative = batch
+
+        anchor_projection = self.target_projector(anchor)
+        positive_projection = self.drug_projector(positive)
+        negative_projection = self.drug_projector(negative)
+
+        
+        loss = self.contrastive_loss_fct(anchor_projection, positive_projection, negative_projection)
+        return loss
+
+    def non_contrastive_step(self, batch):
         drug, protein, label = train_batch
         similarity = self.forward(drug, protein)
 
         if self.classify:
-            sigmoid = torch.nn.Sigmoid()
-            similarity = torch.squeeze(sigmoid(similarity))
-            loss_fct = torch.nn.BCELoss()
-        else:
-            loss_fct = torch.nn.MSELoss()
+            similarity = torch.squeeze(self.sigmoid(similarity))
 
-        loss = loss_fct(similarity, label)
-        self.log("train/loss", loss)
+        loss = self.loss_fct(similarity, label)
+
+
+    def training_step(self, train_batch, batch_idx, contrastive=False):
+        if contrastive:
+            _, con_opt = self.optimizers()
+            con_opt.zero_grad()
+            loss = self.contrastive_step(train_batch)
+            self.manual_backward(loss)
+            con_opt.step()
+            self.log("train/contrastive_loss", loss)
+        else:
+            opt, _ = self.optimizers()
+            opt.zero_grad()
+            loss = self.non_contrastive_step(train_batch)
+            self.manual_backward(loss)
+            opt.step()
+            self.log("train/loss", loss)
 
         return loss
+
+    def on_train_epoch_end(self):
+        sch = self.lr_schedulers()
+        for s in sch:
+            s.step()
+        if self.contrastive:
+            self.contrastive_loss_fct.step()
+            self.log("train/triplet_margin", self.contrastive_loss_fct.margin)
+            self.log("train/contrastive_lr", sch[1].get_lr())
+
 
     def validation_step(self, train_batch, batch_idx):
         drug, protein, label = train_batch
         similarity = self.forward(drug, protein)
 
         if self.classify:
-            sigmoid = torch.nn.Sigmoid()
-            similarity = torch.squeeze(sigmoid(similarity))
-            loss_fct = torch.nn.BCELoss()
-        else:
-            loss_fct = torch.nn.MSELoss()
+            similarity = torch.squeeze(F.sigmoid(similarity))
 
-        loss = loss_fct(similarity, label)
+        loss = self.loss_fct(similarity, label)
         self.log("val/loss", loss)
         return {"loss": loss, "preds": similarity, "target": label}
 
