@@ -2,6 +2,7 @@ import pandas as pd
 
 import torch
 from torch.utils.data import Dataset, DataLoader
+from torch.nn.utils.rnn import pad_sequence
 import pytorch_lightning as pl
 
 from numpy.random import choice
@@ -52,8 +53,7 @@ def drug_target_collate_fn(args: T.Tuple[torch.Tensor, torch.Tensor, torch.Tenso
     labs = [a[2] for a in args]
 
     drugs = torch.stack(d_emb, 0)
-    #targets = pad_sequence(t_emb, batch_first=True, padding_value=FOLDSEEK_MISSING_IDX)
-    targets = torch.stack(t_emb, 0)
+    targets = pad_sequence(t_emb, batch_first=True)
     labels = torch.stack(labs, 0)
 
     return drugs, targets, labels
@@ -73,8 +73,7 @@ def contrastive_collate_fn(args: T.Tuple[torch.Tensor, torch.Tensor, torch.Tenso
     pos_emb = [a[1] for a in args]
     neg_emb = [a[2] for a in args]
 
-    #anchors = pad_sequence(anchor_emb, batch_first=True, padding_value=FOLDSEEK_MISSING_IDX)
-    anchors = torch.stack(anchor_emb, 0)
+    anchors = pad_sequence(anchor_emb, batch_first=True)
     positives = torch.stack(pos_emb, 0)
     negatives = torch.stack(neg_emb, 0)
 
@@ -431,7 +430,7 @@ class TDCDataModule(pl.LightningDataModule):
     def test_dataloader(self):
         return DataLoader(self.data_test, **self._loader_kwargs)
 
-class DTEnzPredDataModule(pl.LightningDataModule):
+class EnzPredDataModule(pl.LightningDataModule):
     """ DataModule used for training on drug-target interaction for enzymes.
     Uses the following data sets:
     - halogenase

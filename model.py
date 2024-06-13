@@ -202,6 +202,8 @@ class DrugTargetCoembeddingLightning(pl.LightningModule):
 
         loss = self.loss_fct(similarity, label)
 
+        return loss
+
 
     def training_step(self, train_batch, batch_idx, contrastive=False):
         if contrastive:

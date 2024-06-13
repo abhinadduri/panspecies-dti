@@ -5,7 +5,7 @@ import pytorch_lightning as pl
 # but I am not sure if "contrastive" will be passed to the training_step function in the model.
 class ConPlexEpochLoop(pl.loops.TrainingEpochLoop):
     def __init__(self, min_steps = None, max_steps = -1, contrastive = False):
-        self.super.__init__(min_steps, max_steps)
+        super.__init__(min_steps, max_steps)
         self.contrastive = contrastive
 
     def run(self, *args, **kwargs):
