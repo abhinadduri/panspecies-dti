@@ -137,10 +137,14 @@ model = DrugTargetCoembeddingLightning(
 
 # Train model
 trainer = pl.Trainer()
-trainer.training_epoch_loop = ConPlexEpochLoop(contrastive=config.contrastive)
+if config.contrastive == True:
+    trainer.training_epoch_loop = ConPlexEpochLoop(contrastive=config.contrastive)
+    train_dataloaders = [datamodule.train_dataloader(), contrastive_datamodule.train_dataloader()]
+else:
+    train_dataloaders = datamodule.train_dataloader()
 trainer.fit(
         model,
-        train_dataloaders=[datamodule.train_dataloader(), contrastive_datamodule.train_dataloader()], #this won't work, need to change
+        train_dataloaders=train_dataloaders, #this won't work, need to change
         val_dataloaders=datamodule.val_dataloader(),
         )
 

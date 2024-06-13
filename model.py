@@ -1,7 +1,7 @@
 import torch
 from torch import nn
 import torch.nn.functional as F
-from .contrastive_loss import MarginScheduledLossFunction
+from contrastive_loss import MarginScheduledLossFunction
 
 import pytorch_lightning as pl
 import torchmetrics

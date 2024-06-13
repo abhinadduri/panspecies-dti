@@ -8,6 +8,7 @@ import pytorch_lightning as pl
 from numpy.random import choice
 from sklearn.model_selection import KFold, train_test_split
 from tdc.benchmark_group import dti_dg_group
+from featurizers import Featurizer
 
 from pathlib import Path
 import typing as T
@@ -206,9 +207,9 @@ class DTIDataModule(pl.LightningDataModule):
         self.target_featurizer = target_featurizer
 
     def prepare_data(self):
-    """
-    Featurize drugs and targets and save them to disk if they don't already exist
-    """
+        """
+        Featurize drugs and targets and save them to disk if they don't already exist
+        """
 
         if self.drug_featurizer.path.exists() and self.target_featurizer.path.exists():
             print("Drug and target featurizers already exist")
