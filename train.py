@@ -144,7 +144,7 @@ wandb_logger = WandbLogger(project=config.wandb_proj, entity="andmcnutt")
 wandb_logger.watch(model)
 wandb_logger.experiment.config.update(config)
 
-checkpoint_callback = pl.callbacks.ModelCheckpoint(monitor=config.watch_metric, mode="max")
+checkpoint_callback = pl.callbacks.ModelCheckpoint(monitor=config.watch_metric, mode="max", filename=config.task, verbose=True)
 # Train model
 trainer = pl.Trainer(
         accelerator="auto",
@@ -160,8 +160,10 @@ else:
     train_dataloaders = datamodule.train_dataloader()
 trainer.fit(
         model,
-        train_dataloaders=train_dataloaders, #this won't work, need to change
+        train_dataloaders=train_dataloaders,
         val_dataloaders=datamodule.val_dataloader(),
         )
 
+# Test model using best weights
+trainer.test(dataloaders=datamodule.test_dataloader(), ckpt_path=checkpoint_callback.best_model_path)
 

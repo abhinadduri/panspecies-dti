@@ -174,6 +174,11 @@ class DrugTargetCoembeddingLightning(pl.LightningModule):
                     update_fn = args.margin_fn
                     )
 
+        self.val_step_outputs = []
+        self.val_step_targets = []
+        self.test_step_outputs = []
+        self.test_step_targets = []
+
     def forward(self, drug, target):
         drug_projection = self.drug_projector(drug)
         target_projection = self.target_projector(target)
@@ -261,7 +266,6 @@ class DrugTargetCoembeddingLightning(pl.LightningModule):
             self.log("train/lr", sch.get_lr()[0])
             sch.step()
 
-
     def validation_step(self, batch, batch_idx):
         drug, protein, label = batch
         similarity = self.forward(drug, protein)
@@ -271,12 +275,40 @@ class DrugTargetCoembeddingLightning(pl.LightningModule):
 
         loss = self.loss_fct(similarity, label)
         self.log("val/loss", loss)
+
+        self.val_step_outputs.extend(similarity)
+        self.val_step_targets.extend(label)
+
         return {"loss": loss, "preds": similarity, "target": label}
 
-    def validation_step_end(self, outputs):
+    def on_validation_epoch_end(self):
         for name, metric in self.metrics.items():
-            metric(outputs["preds"], outputs["target"].to(torch.int))
-            self.log(f"val/{name}", metric)
+            metric(self.val_step_outputs, self.val_step_targets.to(torch.int))
+            self.log(f"val/{name}", metric, on_step=False, on_epoch=True)
+
+        self.val_step_outputs.clear()
+        self.val_step_targets.clear()
+
+    def test_step(self, batch, batch_idx):
+        drug, protein, label = batch
+        similarity = self.forward(drug, protein)
+
+        if self.classify:
+            similarity = torch.squeeze(F.sigmoid(similarity))
+
+        self.test_step_outputs.extend(similarity)
+        self.test_step_targets.extend(label)
+
+        return {"preds": similarity, "target": label}
+
+    def on_test_epoch_end(self):
+        for name, metric in self.metrics.items():
+            metric(self.test_step_outputs, self.test_step_targets.to(torch.int))
+            self.log(f"test/{name}", metric, on_step=False, on_epoch=True)
+
+        self.test_step_outputs.clear()
+        self.test_step_targets.clear()
+
 
 def main():
     from featurizers import ProtBertFeaturizer
