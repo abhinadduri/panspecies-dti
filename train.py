@@ -137,8 +137,8 @@ model = DrugTargetCoembeddingLightning(
         dropout=config.dropout,
         args=config
         )
-xavier_normal(model.drug_projector)
-xavier_normal(model.target_projector)
+# xavier_normal(model.drug_projector)
+# xavier_normal(model.target_projector)
 
 wandb_logger = WandbLogger(project=config.wandb_proj, entity="andmcnutt")
 wandb_logger.watch(model)

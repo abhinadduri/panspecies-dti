@@ -137,12 +137,15 @@ class DrugTargetCoembeddingLightning(pl.LightningModule):
         self.drug_projector = nn.Sequential(
             nn.Linear(self.drug_dim, self.latent_dim), self.activation()
         )
+        nn.init.xavier_normal_(self.drug_projector[0].weight)
 
         
         self.target_projector = nn.Sequential(
                 TargetEmbedding( self.target_dim, self.latent_dim, num_layers_target, dropout=dropout) if args.transformer else nn.Sequential(AverageNonZeroVectors(), nn.Linear(self.target_dim, self.latent_dim)),
                 self.activation()
         )
+        if not args.transformer:
+            nn.init.xavier_normal_(self.target_projector[0][1].weight)
 
         if self.classify:
             self.sigmoid = nn.Sigmoid()
@@ -252,8 +255,10 @@ class DrugTargetCoembeddingLightning(pl.LightningModule):
                 s.step()
             self.contrastive_loss_fct.step()
             self.log("train/triplet_margin", self.contrastive_loss_fct.margin)
+            self.log("train/lr", sch[0].get_lr())
             self.log("train/contrastive_lr", sch[1].get_lr())
         else:
+            self.log("train/lr", sch.get_lr())
             sch.step()
 
 
