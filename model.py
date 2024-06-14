@@ -30,7 +30,7 @@ class Attention(nn.Module):
         self.heads = num_heads
         self.inner_dim = num_heads * head_dim
         self.to_qkv = nn.Linear(embed_dim, self.inner_dim * 3, bias=False)
-        self.multihead_attn = nn.MultiheadAttention(self.inner_dim, num_heads, dropout=dropout, **kwargs)
+        self.multihead_attn = nn.MultiheadAttention(self.inner_dim, num_heads, dropout=dropout, batch_first=True, **kwargs)
 
     def forward(self, x):
         q, k, v = self.to_qkv(x).chunk(3, dim=-1)
@@ -61,6 +61,7 @@ class Transformer(nn.Module):
 
     def forward(self, x):
         for attn, ff in self.layers:
+            # import pdb; pdb.set_trace()
             x = attn(x) + x
             x = ff(x) + x
 
@@ -87,6 +88,26 @@ class TargetEmbedding(nn.Module):
         x = self.transformer(x)
         return x[:,0]
 
+class AverageNonZeroVectors(torch.nn.Module):
+    def __init__(self):
+        super(AverageNonZeroVectors, self).__init__()
+
+    def forward(self, input_batch):
+        # Calculate the mask for non-zero vectors
+        non_zero_mask = (input_batch.sum(dim=-1) != 0).float()
+
+        # Calculate the total number of non-zero vectors in the batch
+        num_non_zero = non_zero_mask.sum(dim=1)
+
+        # Calculate the sum of non-zero vectors in the batch
+        batch_sum = torch.sum(input_batch * non_zero_mask.unsqueeze(-1), dim=1)
+
+        # Calculate the average of non-zero vectors in the batch
+        batch_avg = batch_sum / num_non_zero.unsqueeze(-1)
+
+        return batch_avg
+
+
 class DrugTargetCoembeddingLightning(pl.LightningModule):
     def __init__(
         self,
@@ -105,7 +126,7 @@ class DrugTargetCoembeddingLightning(pl.LightningModule):
 
         self.automatic_optimization = False # We will handle the optimization step ourselves
         self.drug_dim = drug_dim
-        self.target_dim = drug_dim
+        self.target_dim = target_dim
         self.latent_dim = latent_dim
         self.activation = activation
 
@@ -117,16 +138,18 @@ class DrugTargetCoembeddingLightning(pl.LightningModule):
             nn.Linear(self.drug_dim, self.latent_dim), self.activation()
         )
 
+        
         self.target_projector = nn.Sequential(
-            TargetEmbedding( self.target_dim, self.latent_dim, num_layers_target, dropout=dropout), self.activation()
+                TargetEmbedding( self.target_dim, self.latent_dim, num_layers_target, dropout=dropout) if args.transformer else nn.Sequential(AverageNonZeroVectors(), nn.Linear(self.target_dim, self.latent_dim)),
+                self.activation()
         )
 
         if self.classify:
             self.sigmoid = nn.Sigmoid()
-            self.val_accuracy = torchmetrics.Accuracy()
-            self.val_aupr = torchmetrics.AveragePrecision()
-            self.val_auroc = torchmetrics.AUROC()
-            self.val_f1 = torchmetrics.F1Score()
+            self.val_accuracy = torchmetrics.Accuracy(task='binary')
+            self.val_aupr = torchmetrics.AveragePrecision(task='binary')
+            self.val_auroc = torchmetrics.AUROC(task='binary')
+            self.val_f1 = torchmetrics.F1Score(task='binary')
             self.metrics = {
                 "acc": self.val_accuracy,
                 "aupr": self.val_aupr,
@@ -165,21 +188,17 @@ class DrugTargetCoembeddingLightning(pl.LightningModule):
         return similarity
 
     def configure_optimizers(self):
-        optimizers, lr_schedulers = [], []
         optimizer = torch.optim.Adam(self.parameters(), lr=self.args.lr)
         lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
-            opt, T_0= self.args.lr_t0
+            optimizer, T_0= self.args.lr_t0
             )
-        optimizers.append(optimizer)
-        lr_schedulers.append(lr_scheduler)
         if self.contrastive:
             opt_contrastive = torch.optim.Adam(self.parameters(), lr=self.args.clr)
             lr_scheduler_contrastive = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
                 opt_contrastive, T_0=self.args.clr_t0
             )
-            optimizers.append(opt_contrastive)
-            lr_schedulers.append(lr_scheduler_contrastive)
-        return optimizers, lr_schedulers
+            return optimizer, opt_contrastive
+        return ([optimizer], [lr_scheduler])
 
     def contrastive_step(self, batch):
 
@@ -194,7 +213,7 @@ class DrugTargetCoembeddingLightning(pl.LightningModule):
         return loss
 
     def non_contrastive_step(self, batch):
-        drug, protein, label = train_batch
+        drug, protein, label = batch
         similarity = self.forward(drug, protein)
 
         if self.classify:
@@ -205,18 +224,21 @@ class DrugTargetCoembeddingLightning(pl.LightningModule):
         return loss
 
 
-    def training_step(self, train_batch, batch_idx, contrastive=False):
+    def training_step(self, batch, batch_idx, contrastive=False):
         if contrastive:
             _, con_opt = self.optimizers()
             con_opt.zero_grad()
-            loss = self.contrastive_step(train_batch)
+            loss = self.contrastive_step(batch)
             self.manual_backward(loss)
             con_opt.step()
             self.log("train/contrastive_loss", loss)
         else:
-            opt, _ = self.optimizers()
+            if self.contrastive:
+                opt, _ = self.optimizers()
+            else:
+                opt = self.optimizers()
             opt.zero_grad()
-            loss = self.non_contrastive_step(train_batch)
+            loss = self.non_contrastive_step(batch)
             self.manual_backward(loss)
             opt.step()
             self.log("train/loss", loss)
@@ -225,16 +247,18 @@ class DrugTargetCoembeddingLightning(pl.LightningModule):
 
     def on_train_epoch_end(self):
         sch = self.lr_schedulers()
-        for s in sch:
-            s.step()
         if self.contrastive:
+            for s in sch:
+                s.step()
             self.contrastive_loss_fct.step()
             self.log("train/triplet_margin", self.contrastive_loss_fct.margin)
             self.log("train/contrastive_lr", sch[1].get_lr())
+        else:
+            sch.step()
 
 
-    def validation_step(self, train_batch, batch_idx):
-        drug, protein, label = train_batch
+    def validation_step(self, batch, batch_idx):
+        drug, protein, label = batch
         similarity = self.forward(drug, protein)
 
         if self.classify:
@@ -246,7 +270,7 @@ class DrugTargetCoembeddingLightning(pl.LightningModule):
 
     def validation_step_end(self, outputs):
         for name, metric in self.metrics.items():
-            metric(outputs["preds"], outputs["target"])
+            metric(outputs["preds"], outputs["target"].to(torch.int))
             self.log(f"val/{name}", metric)
 
 def main():
