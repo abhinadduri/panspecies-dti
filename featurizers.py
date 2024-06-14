@@ -11,6 +11,7 @@ from transformers import AutoTokenizer, AutoModel, pipeline
 from rdkit.Chem import AllChem as Chem
 from rdkit import DataStructs
 from rdkit.Chem.rdmolops import RDKFingerprint
+from utils import canonicalize
 
 def sanitize_string(s):
     return s.replace("/", "|")

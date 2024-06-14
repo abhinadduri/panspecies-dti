@@ -255,10 +255,10 @@ class DrugTargetCoembeddingLightning(pl.LightningModule):
                 s.step()
             self.contrastive_loss_fct.step()
             self.log("train/triplet_margin", self.contrastive_loss_fct.margin)
-            self.log("train/lr", sch[0].get_lr())
-            self.log("train/contrastive_lr", sch[1].get_lr())
+            self.log("train/lr", sch[0].get_lr()[0])
+            self.log("train/contrastive_lr", sch[1].get_lr()[0])
         else:
-            self.log("train/lr", sch.get_lr())
+            self.log("train/lr", sch.get_lr()[0])
             sch.step()
 
 
