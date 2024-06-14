@@ -124,7 +124,7 @@ class BinaryDataset(Dataset):
     def __getitem__(self, i: int):
         drug = self.drug_featurizer(self.drugs.iloc[i])
         target = self.target_featurizer(self.targets.iloc[i])
-        label = torch.tensor(self.labels.iloc[i])
+        label = torch.tensor(self.labels.iloc[i], dtype=torch.float32)
 
         return drug, target, label
 
@@ -211,6 +211,7 @@ class DTIDataModule(pl.LightningDataModule):
         Featurize drugs and targets and save them to disk if they don't already exist
         """
 
+        print(f"drug feat path: {self.drug_featurizer.path}\ntarget path:{self.target_featurizer.path}")
         if self.drug_featurizer.path.exists() and self.target_featurizer.path.exists():
             print("Drug and target featurizers already exist")
             return
@@ -230,10 +231,10 @@ class DTIDataModule(pl.LightningDataModule):
             self.target_featurizer.cuda(self._device)
 
         if not self.drug_featurizer.path.exists():
-            self.drug_featurizer.write_to_disk(all_drugs)
+            self.drug_featurizer.write_to_disk(all_drugs, file_path=self.drug_featurizer.path)
 
         if not self.target_featurizer.path.exists():
-            self.target_featurizer.write_to_disk(all_targets)
+            self.target_featurizer.write_to_disk(all_targets, file_path=self.target_featurizer.path)
 
         self.drug_featurizer.cpu()
         self.target_featurizer.cpu()

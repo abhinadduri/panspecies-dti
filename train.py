@@ -5,6 +5,7 @@ import pandas as pd
 import torch
 from torch import nn
 import pytorch_lightning as pl
+from pytorch_lightning.loggers import WandbLogger
 
 import wandb
 from omegaconf import OmegaConf
@@ -21,7 +22,7 @@ from datamodules import (
         )
 from model import DrugTargetCoembeddingLightning
 from trainloop import ConPlexEpochLoop
-from utils import get_featurizer
+from utils import get_featurizer, xavier_normal
 
 parser = argparse.ArgumentParser(description="PLM_DTI Training.")
 parser.add_argument("--exp-id", required=True, help="Experiment ID", dest="experiment_id")
@@ -127,17 +128,31 @@ if config.contrastive:
 # Load model
 print("Initializing model")
 model = DrugTargetCoembeddingLightning(
-        drug_dim=config.drug_shape,
-        target_dim=config.target_shape,
-        latent_dim=config.latent_dim,
+        drug_dim=drug_featurizer.shape,
+        target_dim=target_featurizer.shape,
+        latent_dim=config.latent_dimension,
         classify=config.classify,
         contrastive=config.contrastive,
         num_layers_target=config.num_layers_target,
         dropout=config.dropout,
+        args=config
         )
+xavier_normal(model.drug_projector)
+xavier_normal(model.target_projector)
 
+wandb_logger = WandbLogger(project=config.wandb_proj, entity="andmcnutt")
+wandb_logger.watch(model)
+wandb_logger.experiment.config.update(config)
+
+checkpoint_callback = pl.callbacks.ModelCheckpoint(monitor=config.watch_metric, mode="max")
 # Train model
-trainer = pl.Trainer()
+trainer = pl.Trainer(
+        accelerator="auto",
+        devices="auto",
+        logger=wandb_logger,
+        max_epochs=config.epochs,
+        callbacks=[checkpoint_callback]
+        )
 if config.contrastive == True:
     trainer.training_epoch_loop = ConPlexEpochLoop(contrastive=config.contrastive)
     train_dataloaders = [datamodule.train_dataloader(), contrastive_datamodule.train_dataloader()]
