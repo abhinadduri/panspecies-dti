@@ -1,5 +1,7 @@
 import torch
 from torch import nn
+import torch.nn.functional as F
+from contrastive_loss import MarginScheduledLossFunction
 
 import pytorch_lightning as pl
 import torchmetrics
@@ -28,7 +30,7 @@ class Attention(nn.Module):
         self.heads = num_heads
         self.inner_dim = num_heads * head_dim
         self.to_qkv = nn.Linear(embed_dim, self.inner_dim * 3, bias=False)
-        self.multihead_attn = nn.MultiheadAttention(self.inner_dim, num_heads, dropout=dropout, **kwargs)
+        self.multihead_attn = nn.MultiheadAttention(self.inner_dim, num_heads, dropout=dropout, batch_first=True, **kwargs)
 
     def forward(self, x):
         q, k, v = self.to_qkv(x).chunk(3, dim=-1)
@@ -59,19 +61,21 @@ class Transformer(nn.Module):
 
     def forward(self, x):
         for attn, ff in self.layers:
+            # import pdb; pdb.set_trace()
             x = attn(x) + x
             x = ff(x) + x
 
         return self.norm(x)
 
 class TargetEmbedding(nn.Module):
-    def __init__(self, embedding_dim, hidden_dim, num_layers, dropout = 0.):
+    def __init__(self, embedding_dim, hidden_dim, num_layers, dropout = 0., out_type="cls"):
         super().__init__()
         self.embedding_dim = embedding_dim
         self.hidden_dim = hidden_dim
         self.num_layers = num_layers
         self.cls_token = nn.Parameter(torch.randn(1, 1, self.embedding_dim))
         self.transformer = Transformer(embedding_dim, num_layers, 8, embedding_dim // 8, hidden_dim, dropout = dropout)
+        self.out_type = "cls" if out_type == "cls" else "mean"
 
     def forward(self, x):
         """
@@ -83,7 +87,72 @@ class TargetEmbedding(nn.Module):
         cls_tokens = self.cls_token.repeat(b, 1, 1)
         x = torch.cat((cls_tokens, x), dim=1)
         x = self.transformer(x)
-        return x[:,0]
+        return x[:,0] if self.out_type == "cls" else x[:,1:].mean(dim=1)
+
+# from https://github.com/facebookresearch/deit/blob/main/patchconvnet_models.py
+class Learned_Aggregation_Layer(nn.Module):
+    def __init__(
+        self,
+        dim: int,
+        num_heads: int = 1,
+        qkv_bias: bool = False,
+        qk_scale: float = None,
+        attn_drop: float = 0.0,
+        proj_drop: float = 0.0,
+    ):
+        super().__init__()
+        self.num_heads = num_heads
+        head_dim: int = dim // num_heads
+        # NOTE scale factor was wrong in my original version, can set manually to be compat with prev weights
+        self.scale = qk_scale if qk_scale is not None else head_dim**-0.5
+
+        self.cls_token = nn.Parameter(torch.randn(1, 1, dim))
+        self.q = nn.Linear(dim, dim, bias=qkv_bias)
+        self.k = nn.Linear(dim, dim, bias=qkv_bias)
+        self.v = nn.Linear(dim, dim, bias=qkv_bias)
+        self.id = nn.Identity()
+        self.attn_drop = nn.Dropout(attn_drop)
+        self.proj = nn.Linear(dim, dim)
+        self.proj_drop = nn.Dropout(proj_drop)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        B, N, C = x.shape
+        cls_tokens = self.cls_token.repeat(B, 1, 1)
+        q = self.q(cls_tokens).reshape(B, 1, self.num_heads, C // self.num_heads).permute(0, 2, 1, 3)
+        k = self.k(x).reshape(B, N, self.num_heads, C // self.num_heads).permute(0, 2, 1, 3)
+
+        q = q * self.scale
+        v = self.v(x).reshape(B, N, self.num_heads, C // self.num_heads).permute(0, 2, 1, 3)
+
+        attn = q @ k.transpose(-2, -1)
+        attn = self.id(attn)
+        attn = attn.softmax(dim=-1)
+        attn = self.attn_drop(attn)
+
+        x_cls = (attn @ v).transpose(1, 2).reshape(B, 1, C)
+        x_cls = self.proj(x_cls)
+        x_cls = self.proj_drop(x_cls)
+
+        return x_cls.squeeze()
+
+class AverageNonZeroVectors(torch.nn.Module):
+    def __init__(self):
+        super(AverageNonZeroVectors, self).__init__()
+
+    def forward(self, input_batch):
+        # Calculate the mask for non-zero vectors
+        non_zero_mask = (input_batch.sum(dim=-1) != 0).float()
+
+        # Calculate the total number of non-zero vectors in the batch
+        num_non_zero = non_zero_mask.sum(dim=1)
+
+        # Calculate the sum of non-zero vectors in the batch
+        batch_sum = torch.sum(input_batch * non_zero_mask.unsqueeze(-1), dim=1)
+
+        # Calculate the average of non-zero vectors in the batch
+        batch_avg = batch_sum / num_non_zero.unsqueeze(-1)
+
+        return batch_avg
 
 class DrugTargetCoembeddingLightning(pl.LightningModule):
     def __init__(
@@ -96,47 +165,78 @@ class DrugTargetCoembeddingLightning(pl.LightningModule):
         num_layers_target=1,
         dropout=0,
         lr=1e-4,
+        contrastive=False,
+        args=None,
     ):
         super().__init__()
 
+        self.automatic_optimization = False # We will handle the optimization step ourselves
         self.drug_dim = drug_dim
-        self.target_dim = drug_dim
+        self.target_dim = target_dim
         self.latent_dim = latent_dim
         self.activation = activation
 
         self.classify = classify
-        self.lr = lr
+        self.contrastive = contrastive
+        self.args = args
 
         self.drug_projector = nn.Sequential(
             nn.Linear(self.drug_dim, self.latent_dim), self.activation()
         )
+        nn.init.xavier_normal_(self.drug_projector[0].weight)
+
+        
+        protein_projector=nn.Sequential(AverageNonZeroVectors(), nn.Linear(self.target_dim, self.latent_dim))
+        if args.prot_proj == "transformer":
+            protein_projector = TargetEmbedding( self.target_dim, self.latent_dim, num_layers_target, dropout=dropout, out_type=args.out_type)
+        elif args.prot_proj == "agg":
+            protein_projector = nn.Sequential(Learned_Aggregation_Layer(self.target_dim, attn_drop=dropout, proj_drop=dropout), nn.Linear(self.target_dim, self.latent_dim))
 
         self.target_projector = nn.Sequential(
-            TargetEmbedding( self.target_dim, self.latent_dim, num_layers_target, dropout=dropout), self.activation()
+                protein_projector,
+                self.activation()
         )
+        if args.prot_proj == "conplex":
+            nn.init.xavier_normal_(self.target_projector[0][1].weight)
 
         if self.classify:
-            self.val_accuracy = torchmetrics.Accuracy()
-            self.val_aupr = torchmetrics.AveragePrecision()
-            self.val_auroc = torchmetrics.AUROC()
-            self.val_f1 = torchmetrics.F1Score()
+            self.sigmoid = nn.Sigmoid()
+            self.val_accuracy = torchmetrics.Accuracy(task='binary')
+            self.val_aupr = torchmetrics.AveragePrecision(task='binary')
+            self.val_auroc = torchmetrics.AUROC(task='binary')
+            self.val_f1 = torchmetrics.F1Score(task='binary')
             self.metrics = {
                 "acc": self.val_accuracy,
                 "aupr": self.val_aupr,
                 "auroc": self.val_auroc,
                 "f1": self.val_f1,
             }
+            self.loss_fct = torch.nn.BCELoss()
         else:
             self.val_mse = torchmetrics.MeanSquaredError()
             self.val_pcc = torchmetrics.PearsonCorrCoef()
             self.metrics = {"mse": self.val_mse, "pcc": self.val_pcc}
+            self.loss_fct = torch.nn.MSELoss()
+
+        if self.contrastive:
+            self.contrastive_loss_fct = MarginScheduledLossFunction(
+                    M_0 = args.margin_max,
+                    N_epoch = args.epochs,
+                    N_restart = args.margin_t0,
+                    update_fn = args.margin_fn
+                    )
+
+        self.val_step_outputs = []
+        self.val_step_targets = []
+        self.test_step_outputs = []
+        self.test_step_targets = []
 
     def forward(self, drug, target):
         drug_projection = self.drug_projector(drug)
         target_projection = self.target_projector(target)
 
         if self.classify:
-            similarity = nn.CosineSimilarity()(
+            similarity = F.cosine_similarity(
                 drug_projection, target_projection
             )
         else:
@@ -148,44 +248,119 @@ class DrugTargetCoembeddingLightning(pl.LightningModule):
         return similarity
 
     def configure_optimizers(self):
-        optimizer = torch.optim.Adam(self.parameters(), lr=self.lr)
-        return optimizer
+        optimizer = torch.optim.Adam(self.parameters(), lr=self.args.lr)
+        lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
+            optimizer, T_0= self.args.lr_t0
+            )
+        if self.contrastive:
+            opt_contrastive = torch.optim.Adam(self.parameters(), lr=self.args.clr)
+            lr_scheduler_contrastive = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
+                opt_contrastive, T_0=self.args.clr_t0
+            )
+            return optimizer, opt_contrastive
+        return ([optimizer], [lr_scheduler])
 
-    def training_step(self, train_batch, batch_idx):
-        drug, protein, label = train_batch
+    def contrastive_step(self, batch):
+
+        anchor, positive, negative = batch
+
+        anchor_projection = self.target_projector(anchor)
+        positive_projection = self.drug_projector(positive)
+        negative_projection = self.drug_projector(negative)
+
+        
+        loss = self.contrastive_loss_fct(anchor_projection, positive_projection, negative_projection)
+        return loss
+
+    def non_contrastive_step(self, batch):
+        drug, protein, label = batch
         similarity = self.forward(drug, protein)
 
         if self.classify:
-            sigmoid = torch.nn.Sigmoid()
-            similarity = torch.squeeze(sigmoid(similarity))
-            loss_fct = torch.nn.BCELoss()
-        else:
-            loss_fct = torch.nn.MSELoss()
+            similarity = torch.squeeze(self.sigmoid(similarity))
 
-        loss = loss_fct(similarity, label)
-        self.log("train/loss", loss)
+        loss = self.loss_fct(similarity, label)
 
         return loss
 
-    def validation_step(self, train_batch, batch_idx):
-        drug, protein, label = train_batch
+
+    def training_step(self, batch, batch_idx, contrastive=False):
+        if contrastive:
+            _, con_opt = self.optimizers()
+            con_opt.zero_grad()
+            loss = self.contrastive_step(batch)
+            self.manual_backward(loss)
+            con_opt.step()
+            self.log("train/contrastive_loss", loss)
+        else:
+            if self.contrastive:
+                opt, _ = self.optimizers()
+            else:
+                opt = self.optimizers()
+            opt.zero_grad()
+            loss = self.non_contrastive_step(batch)
+            self.manual_backward(loss)
+            opt.step()
+            self.log("train/loss", loss)
+
+        return loss
+
+    def on_train_epoch_end(self):
+        sch = self.lr_schedulers()
+        if self.contrastive:
+            for s in sch:
+                s.step()
+            self.contrastive_loss_fct.step()
+            self.log("train/triplet_margin", self.contrastive_loss_fct.margin)
+            self.log("train/lr", sch[0].get_lr()[0])
+            self.log("train/contrastive_lr", sch[1].get_lr()[0])
+        else:
+            self.log("train/lr", sch.get_lr()[0])
+            sch.step()
+
+    def validation_step(self, batch, batch_idx):
+        drug, protein, label = batch
         similarity = self.forward(drug, protein)
 
         if self.classify:
-            sigmoid = torch.nn.Sigmoid()
-            similarity = torch.squeeze(sigmoid(similarity))
-            loss_fct = torch.nn.BCELoss()
-        else:
-            loss_fct = torch.nn.MSELoss()
+            similarity = torch.squeeze(F.sigmoid(similarity))
 
-        loss = loss_fct(similarity, label)
+        loss = self.loss_fct(similarity, label)
         self.log("val/loss", loss)
+
+        self.val_step_outputs.extend(similarity)
+        self.val_step_targets.extend(label)
+
         return {"loss": loss, "preds": similarity, "target": label}
 
-    def validation_step_end(self, outputs):
+    def on_validation_epoch_end(self):
         for name, metric in self.metrics.items():
-            metric(outputs["preds"], outputs["target"])
-            self.log(f"val/{name}", metric)
+            metric(torch.Tensor(self.val_step_outputs), torch.Tensor(self.val_step_targets).to(torch.int))
+            self.log(f"val/{name}", metric, on_step=False, on_epoch=True)
+
+        self.val_step_outputs.clear()
+        self.val_step_targets.clear()
+
+    def test_step(self, batch, batch_idx):
+        drug, protein, label = batch
+        similarity = self.forward(drug, protein)
+
+        if self.classify:
+            similarity = torch.squeeze(F.sigmoid(similarity))
+
+        self.test_step_outputs.extend(similarity)
+        self.test_step_targets.extend(label)
+
+        return {"preds": similarity, "target": label}
+
+    def on_test_epoch_end(self):
+        for name, metric in self.metrics.items():
+            metric(torch.Tensor(self.test_step_outputs), torch.Tensor(self.test_step_targets).to(torch.int))
+            self.log(f"test/{name}", metric, on_step=False, on_epoch=True)
+
+        self.test_step_outputs.clear()
+        self.test_step_targets.clear()
+
 
 def main():
     from featurizers import ProtBertFeaturizer

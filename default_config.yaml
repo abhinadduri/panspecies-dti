@@ -1,0 +1,36 @@
+task: davis
+contrastive_split: within
+
+drug_featurizer: MorganFeaturizer
+target_featurizer: ProtBertFeaturizer
+model_architecture: SimpleCoembeddingNoSigmoid
+latent_dimension: 1024
+latent_distance: "Cosine"
+transformer: False
+num_layers_target: 2
+dropout: 0
+
+batch_size: 32
+contrastive_batch_size: 256
+shuffle: True
+num_workers: 0
+
+epochs: 50
+every_n_val: 1
+lr: 1e-4
+lr_t0: 10
+contrastive: False
+clr: 1e-5
+clr_t0: 10
+margin_fn: 'tanh_decay'
+margin_max: 0.25
+margin_t0: 10
+
+replicate: 0
+verbosity: 3
+
+wandb_proj: ConPlexTrain
+wandb_save: True
+log_file: ./logs/scratch_testing.log
+model_save_dir: ./best_models
+
