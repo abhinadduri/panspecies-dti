@@ -47,9 +47,12 @@ parser.add_argument("--r", "--replicate", type=int, help="Replicate", dest="repl
 parser.add_argument("--d", "--device", default=0, type=int, help="CUDA device", dest="device")
 parser.add_argument("--verbosity", type=int, help="Level at which to log", dest="verbosity")
 parser.add_argument("--checkpoint", default=None, help="Model weights to start from")
+parser.add_argument('--prot-proj', default="avg", choices=["avg","agg","transformer", "genagg"], help="Change the protein projector method")
+parser.add_argument('--out-type', default="cls", choices=['cls','mean'], help="use cls token or mean of everything else")
 
 parser.add_argument("--num-layers-target", type=int, help="Number of layers in target transformer", dest="num_layers_target")
 parser.add_argument("--dropout", type=float, help="Dropout rate for transformer", dest="dropout")
+parser.add_argument("--batch-size", type=int, default=32, help="batch size for training/val/test")
 
 args = parser.parse_args()
 config = OmegaConf.load(args.config)
@@ -137,10 +140,8 @@ model = DrugTargetCoembeddingLightning(
         dropout=config.dropout,
         args=config
         )
-# xavier_normal(model.drug_projector)
-# xavier_normal(model.target_projector)
 
-wandb_logger = WandbLogger(project=config.wandb_proj, entity="andmcnutt")
+wandb_logger = WandbLogger(project=config.wandb_proj, log_model="all")
 wandb_logger.watch(model)
 wandb_logger.experiment.config.update(config)
 

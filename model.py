@@ -68,13 +68,14 @@ class Transformer(nn.Module):
         return self.norm(x)
 
 class TargetEmbedding(nn.Module):
-    def __init__(self, embedding_dim, hidden_dim, num_layers, dropout = 0.):
+    def __init__(self, embedding_dim, hidden_dim, num_layers, dropout = 0., out_type="cls"):
         super().__init__()
         self.embedding_dim = embedding_dim
         self.hidden_dim = hidden_dim
         self.num_layers = num_layers
         self.cls_token = nn.Parameter(torch.randn(1, 1, self.embedding_dim))
         self.transformer = Transformer(embedding_dim, num_layers, 8, embedding_dim // 8, hidden_dim, dropout = dropout)
+        self.out_type = "cls" if out_type == "cls" else "mean"
 
     def forward(self, x):
         """
@@ -86,7 +87,53 @@ class TargetEmbedding(nn.Module):
         cls_tokens = self.cls_token.repeat(b, 1, 1)
         x = torch.cat((cls_tokens, x), dim=1)
         x = self.transformer(x)
-        return x[:,0]
+        return x[:,0] if self.out_type == "cls" else x[:,1:].mean(dim=1)
+
+# from https://github.com/facebookresearch/deit/blob/main/patchconvnet_models.py
+class Learned_Aggregation_Layer(nn.Module):
+    def __init__(
+        self,
+        dim: int,
+        num_heads: int = 1,
+        qkv_bias: bool = False,
+        qk_scale: float = None,
+        attn_drop: float = 0.0,
+        proj_drop: float = 0.0,
+    ):
+        super().__init__()
+        self.num_heads = num_heads
+        head_dim: int = dim // num_heads
+        # NOTE scale factor was wrong in my original version, can set manually to be compat with prev weights
+        self.scale = qk_scale if qk_scale is not None else head_dim**-0.5
+
+        self.cls_token = nn.Parameter(torch.randn(1, 1, dim))
+        self.q = nn.Linear(dim, dim, bias=qkv_bias)
+        self.k = nn.Linear(dim, dim, bias=qkv_bias)
+        self.v = nn.Linear(dim, dim, bias=qkv_bias)
+        self.id = nn.Identity()
+        self.attn_drop = nn.Dropout(attn_drop)
+        self.proj = nn.Linear(dim, dim)
+        self.proj_drop = nn.Dropout(proj_drop)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        B, N, C = x.shape
+        cls_tokens = self.cls_token.repeat(B, 1, 1)
+        q = self.q(cls_tokens).reshape(B, 1, self.num_heads, C // self.num_heads).permute(0, 2, 1, 3)
+        k = self.k(x).reshape(B, N, self.num_heads, C // self.num_heads).permute(0, 2, 1, 3)
+
+        q = q * self.scale
+        v = self.v(x).reshape(B, N, self.num_heads, C // self.num_heads).permute(0, 2, 1, 3)
+
+        attn = q @ k.transpose(-2, -1)
+        attn = self.id(attn)
+        attn = attn.softmax(dim=-1)
+        attn = self.attn_drop(attn)
+
+        x_cls = (attn @ v).transpose(1, 2).reshape(B, 1, C)
+        x_cls = self.proj(x_cls)
+        x_cls = self.proj_drop(x_cls)
+
+        return x_cls.squeeze()
 
 class AverageNonZeroVectors(torch.nn.Module):
     def __init__(self):
@@ -106,7 +153,6 @@ class AverageNonZeroVectors(torch.nn.Module):
         batch_avg = batch_sum / num_non_zero.unsqueeze(-1)
 
         return batch_avg
-
 
 class DrugTargetCoembeddingLightning(pl.LightningModule):
     def __init__(
@@ -140,11 +186,17 @@ class DrugTargetCoembeddingLightning(pl.LightningModule):
         nn.init.xavier_normal_(self.drug_projector[0].weight)
 
         
+        protein_projector=nn.Sequential(AverageNonZeroVectors(), nn.Linear(self.target_dim, self.latent_dim))
+        if args.prot_proj == "transformer":
+            protein_projector = TargetEmbedding( self.target_dim, self.latent_dim, num_layers_target, dropout=dropout, out_type=args.out_type)
+        elif args.prot_proj == "agg":
+            protein_projector = nn.Sequential(Learned_Aggregation_Layer(self.target_dim, attn_drop=dropout, proj_drop=dropout), nn.Linear(self.target_dim, self.latent_dim))
+
         self.target_projector = nn.Sequential(
-                TargetEmbedding( self.target_dim, self.latent_dim, num_layers_target, dropout=dropout) if args.transformer else nn.Sequential(AverageNonZeroVectors(), nn.Linear(self.target_dim, self.latent_dim)),
+                protein_projector,
                 self.activation()
         )
-        if not args.transformer:
+        if args.prot_proj == "conplex":
             nn.init.xavier_normal_(self.target_projector[0][1].weight)
 
         if self.classify:
@@ -283,7 +335,7 @@ class DrugTargetCoembeddingLightning(pl.LightningModule):
 
     def on_validation_epoch_end(self):
         for name, metric in self.metrics.items():
-            metric(self.val_step_outputs, self.val_step_targets.to(torch.int))
+            metric(torch.Tensor(self.val_step_outputs), torch.Tensor(self.val_step_targets).to(torch.int))
             self.log(f"val/{name}", metric, on_step=False, on_epoch=True)
 
         self.val_step_outputs.clear()
@@ -303,7 +355,7 @@ class DrugTargetCoembeddingLightning(pl.LightningModule):
 
     def on_test_epoch_end(self):
         for name, metric in self.metrics.items():
-            metric(self.test_step_outputs, self.test_step_targets.to(torch.int))
+            metric(torch.Tensor(self.test_step_outputs), torch.Tensor(self.test_step_targets).to(torch.int))
             self.log(f"test/{name}", metric, on_step=False, on_epoch=True)
 
         self.test_step_outputs.clear()
