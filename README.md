@@ -2,6 +2,24 @@
 
 All datasets are located in the `data` folder.
 
+# Training a DTI model (w/o contrastive)
+
+Reproducing the drug-target interaction model in the MLCB 2024 abstract.
+
+First, follow create a `conplex-dti` environment following the instructions here: [ConPLex-screen Compile from Source](https://github.com/cnellington/ConPLex-screen?tab=readme-ov-file#compile-from-source)
+
+Baseline "ConPLex" model:
+```
+conda activate conplex-dti
+python train.py --exp-id mlcb --config default_config.yaml
+```
+
+Attention Pooling:
+```
+conda activate conplex-dti
+python train.py --exp-id mlcb --config agg_config.yml
+```
+
 # Generating per-residue ProtBert embeddings
 
 The new method will need to compute and store per-residue ProtBert embeddings to train an attention pooling layer.
