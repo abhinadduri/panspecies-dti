@@ -696,3 +696,51 @@ class DUDEDataModule(pl.LightningDataModule):
     def train_dataloader(self):
         return DataLoader(self.data_train, **self._loader_kwargs)
 
+class CombinedDataModule(pl.LightningDataModule):
+    """DataModule that combines one of [DTIDataModule, TDCDataModule, EnzPredDataModule] and the DUDeDataModule
+    """
+    def __init__(
+            self,
+            task: str,
+            task_kwargs: dict,
+            contrastive_kwargs: dict,
+            ):
+        super().__init__()
+
+        self.task = task
+        self.task_kwargs = task_kwargs
+        self.contrastive_kwargs = contrastive_kwargs
+
+        if self.task == 'dti_dg':
+            self.task_module = TDCDataModule(**self.task_kwargs)
+        elif self.task in EnzPredDataModule.dataset_list():
+            self.task_module = EnzPredDataModule(**self.task_kwargs)
+        else:
+            self.task_module = DTIDataModule(**self.task_kwargs)
+
+        self.contrastive_module = DUDEDataModule(**self.contrastive_kwargs)
+
+    def prepare_data(self):
+        self.task_module.prepare_data()
+        self.contrastive_module.prepare_data()
+
+    def setup(self, stage: T.Optional[str] = None):
+        self.task_module.setup(stage)
+        self.contrastive_module.setup(stage)
+    
+    def train_dataloader(self):
+        if self.trainer.current_epoch % 2 == 0:
+            return self.task_module.train_dataloader()
+        else:
+            return self.contrastive_module.train_dataloader()
+
+    def val_dataloader(self):
+        return self.task_module.val_dataloader()
+
+    def test_dataloader(self):
+        return self.task_module.test_dataloader()
+
+
+
+
+

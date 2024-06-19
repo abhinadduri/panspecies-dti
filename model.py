@@ -248,20 +248,24 @@ class DrugTargetCoembeddingLightning(pl.LightningModule):
         return similarity
 
     def configure_optimizers(self):
+        optimizers = []
+        lr_schedulers = []
         optimizer = torch.optim.Adam(self.parameters(), lr=self.args.lr)
         lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
             optimizer, T_0= self.args.lr_t0
             )
+        optimizers.append(optimizer)
+        lr_schedulers.append(lr_scheduler)
         if self.contrastive:
             opt_contrastive = torch.optim.Adam(self.parameters(), lr=self.args.clr)
             lr_scheduler_contrastive = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
                 opt_contrastive, T_0=self.args.clr_t0
             )
-            return optimizer, opt_contrastive
-        return ([optimizer], [lr_scheduler])
+            optimizers.append(opt_contrastive)
+            lr_schedulers.append(lr_scheduler_contrastive)
+        return (optimizers, lr_schedulers)
 
     def contrastive_step(self, batch):
-
         anchor, positive, negative = batch
 
         anchor_projection = self.target_projector(anchor)
@@ -283,9 +287,8 @@ class DrugTargetCoembeddingLightning(pl.LightningModule):
 
         return loss
 
-
-    def training_step(self, batch, batch_idx, contrastive=False):
-        if contrastive:
+    def training_step(self, batch, batch_idx):
+        if self.contrastive and self.current_epoch % 2 == 1:
             _, con_opt = self.optimizers()
             con_opt.zero_grad()
             loss = self.contrastive_step(batch)
@@ -308,12 +311,14 @@ class DrugTargetCoembeddingLightning(pl.LightningModule):
     def on_train_epoch_end(self):
         sch = self.lr_schedulers()
         if self.contrastive:
-            for s in sch:
-                s.step()
-            self.contrastive_loss_fct.step()
-            self.log("train/triplet_margin", self.contrastive_loss_fct.margin)
-            self.log("train/lr", sch[0].get_lr()[0])
-            self.log("train/contrastive_lr", sch[1].get_lr()[0])
+            if self.current_epoch % 2 == 0: # supervised learning epoch
+                sch[0].step()
+                self.log("train/lr", sch[0].get_lr()[0])
+            else: # contrastive learning epoch
+                sch[1].step()
+                self.contrastive_loss_fct.step()
+                self.log("train/triplet_margin", self.contrastive_loss_fct.margin)
+                self.log("train/contrastive_lr", sch[1].get_lr()[0])
         else:
             self.log("train/lr", sch.get_lr()[0])
             sch.step()
