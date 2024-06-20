@@ -1,9 +1,12 @@
 import pandas as pd
+import pytorch_lightning as pl
 
 import torch
-from torch.utils.data import Dataset, DataLoader
+import torch_geometric
+
+from torch_geometric.data import Batch
 from torch.nn.utils.rnn import pad_sequence
-import pytorch_lightning as pl
+from torch.utils.data import Dataset, DataLoader
 
 from numpy.random import choice
 from sklearn.model_selection import KFold, train_test_split
@@ -40,21 +43,30 @@ def get_task_dir(task_name: str):
 
     return Path(task_paths[task_name.lower()]).resolve()
 
-def drug_target_collate_fn(args: T.Tuple[torch.Tensor, torch.Tensor, torch.Tensor]):
+def drug_target_collate_fn(args: T.Tuple[T.Union[torch.Tensor, torch_geometric.data.Data], torch.Tensor, torch.Tensor]):
     """
     Collate function for PyTorch data loader -- turn a batch of triplets into a triplet of batches
 
-    :param args: Batch of training samples with molecule, protein, and affinity
-    :type args: Iterable[Tuple[torch.Tensor, torch.Tensor, torch.Tensor]]
+    :param args: Batch of training samples with molecule (tensor or graph), protein, and affinity
+    :type args: Iterable[Tuple[torch.Tensor or torch_geometric.data.Data, torch.Tensor, torch.Tensor]]
     :return: Create a batch of examples
-    :rtype: T.Tuple[torch.Tensor, torch.Tensor, torch.Tensor]
+    :rtype: T.Tuple[torch.Tensor or torch_geometric.data.Batch, torch.Tensor, torch.Tensor]
     """
     d_emb = [a[0] for a in args]
     t_emb = [a[1] for a in args]
     labs = [a[2] for a in args]
 
-    drugs = torch.stack(d_emb, 0)
+    if isinstance(d_emb[0], torch.Tensor):
+        # Morgan fingerprint case: stack tensors
+        drugs = torch.stack(d_emb, 0)
+    else:
+        # Graph case: batch using torch_geometric's Batch
+        drugs = Batch.from_data_list(d_emb)
+
+    # Pad the target sequences
     targets = pad_sequence(t_emb, batch_first=True)
+
+    # Stack the labels
     labels = torch.stack(labs, 0)
 
     return drugs, targets, labels
