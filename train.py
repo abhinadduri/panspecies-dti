@@ -54,6 +54,7 @@ parser.add_argument('--out-type', default="cls", choices=['cls','mean'], help="u
 parser.add_argument("--num-layers-target", type=int, help="Number of layers in target transformer", dest="num_layers_target")
 parser.add_argument("--dropout", type=float, help="Dropout rate for transformer", dest="dropout")
 parser.add_argument("--batch-size", type=int, default=32, help="batch size for training/val/test")
+parser.add_argument("--no-wandb", action="store_true", help="Do not use wandb")
 
 args = parser.parse_args()
 config = OmegaConf.load(args.config)
@@ -113,7 +114,7 @@ else:
 
 if config.contrastive:
     print("Loading contrastive data (DUDE)")
-    dude_drug_featurizer = get_featurizer(config.drug_featurizer, save_dir=get_task_dir("DUDe"))
+    dude_drug_featurizer = get_featurizer(config.drug_featurizer, save_dir=get_task_dir("DUDe"), ext='pt')
     dude_target_featurizer = get_featurizer(config.target_featurizer, save_dir=get_task_dir("DUDe"))
 
     contrastive_dm_kwargs = {
@@ -128,11 +129,12 @@ if config.contrastive:
 
     datamodule = CombinedDataModule(
             task=config.task,
-            task_dm_kwargs=task_dm_kwargs,
-            contrastive_dm_kwargs=contrastive_dm_kwargs,
+            task_kwargs=task_dm_kwargs,
+            contrastive_kwargs=contrastive_dm_kwargs,
             )
+    config.epochs *= 2
 else:
-    if config.task = 'dti_dg':
+    if config.task == 'dti_dg':
         datamodule = TDCDataModule(**task_dm_kwargs)
     elif config.task in EnzPredDataModule.dataset_list():
         RuntimeError("EnzPredDataModule not implemented yet")
@@ -155,24 +157,27 @@ model = DrugTargetCoembeddingLightning(
         args=config
         )
 
-wandb_logger = WandbLogger(project=config.wandb_proj, log_model="all")
-wandb_logger.watch(model)
-wandb_logger.experiment.config.update(config)
+if not config.no_wandb:
+    wandb_logger = WandbLogger(project=config.wandb_proj, entity="andmcnutt",log_model="gradients")
+    wandb_logger.watch(model)
+    wandb_logger.experiment.config.update(OmegaConf.to_container(config, resolve=True, throw_on_missing=True))
 
 checkpoint_callback = pl.callbacks.ModelCheckpoint(monitor=config.watch_metric, mode="max", filename=config.task, verbose=True)
 # Train model
 trainer = pl.Trainer(
         accelerator="auto",
         devices="auto",
-        logger=wandb_logger,
+        logger=wandb_logger if not config.no_wandb else None,
         max_epochs=config.epochs,
         callbacks=[checkpoint_callback],
-        reload_dataloaders_every_epoch=config.contrastive,
+        reload_dataloaders_every_n_epochs=1 if config.contrastive else 0,
         )
 trainer.fit(
         model,
         datamodule=datamodule,
         )
+
+wandb.save(f'{config.task}.ckpt')
 
 # Test model using best weights
 trainer.test(datamodule=datamodule, ckpt_path=checkpoint_callback.best_model_path)

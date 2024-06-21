@@ -1,4 +1,5 @@
 import torch
+import wandb
 from torch import nn
 import torch.nn.functional as F
 from contrastive_loss import MarginScheduledLossFunction
@@ -324,6 +325,8 @@ class DrugTargetCoembeddingLightning(pl.LightningModule):
             sch.step()
 
     def validation_step(self, batch, batch_idx):
+        if self.global_step == 0:
+            wandb.define_metric("val/aupr", summary="max")
         drug, protein, label = batch
         similarity = self.forward(drug, protein)
 
