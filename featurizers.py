@@ -122,7 +122,7 @@ class Featurizer:
             out_path = self._save_path
 
         print(f"Writing {self.name} features to {out_path}")
-        with h5py.File(file_path, "a") as h5fi:
+        with h5py.File(out_path, "a") as h5fi:
             for seq in tqdm(seq_list, disable=not verbose, desc=self.name):
                 seq_h5 = sanitize_string(seq)
                 if seq_h5 in h5fi:
