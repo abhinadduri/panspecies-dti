@@ -17,20 +17,25 @@ def sanitize_string(s):
     return s.replace("/", "|")
 
 class Featurizer:
-    def __init__(self, name: str, shape: int, save_dir: Path=Path().absolute()):
+    def __init__(self, name: str, shape: int, save_dir: Path=Path().absolute(), ext: str="h5"):
         self._name = name
         self._shape = shape
-        self._save_path = save_dir / Path(f"{self._name}_features.h5")
+        self._save_path = save_dir / Path(f"{self._name}_features.{ext}")
 
         self._preloaded = False
         self._device = torch.device("cpu")
         self._cuda_registry = {}
         self._on_cuda = False
         self._features = {}
+        self._file_dir = None
 
     def __call__(self, seq: str) -> torch.Tensor:
         if seq not in self.features:
-            self._features[seq] = self.transform(seq)
+            seq_h5 = sanitize_string(seq)
+            if not self._preloaded and self._h5 is not None and seq_h5 in self._h5:
+                return torch.from_numpy(self._h5[seq_h5][:])
+            else:
+                self._features[seq] = self.transform(seq)
 
         return self._features[seq]
 
@@ -113,7 +118,7 @@ class Featurizer:
         return self
 
     def write_to_disk(
-        self, seq_list: T.List[str], verbose: bool = True, file_path: Path = None
+            self, seq_list: T.List[str], verbose: bool = True, file_path: Path = None
     ) -> None:
         if file_path is not None:
             # this is easier for now than changing the code above
@@ -121,21 +126,29 @@ class Featurizer:
         else:
             out_path = self._save_path
 
-        print(f"Writing {self.name} features to {out_path}")
-        with h5py.File(file_path, "a") as h5fi:
-            for seq in tqdm(seq_list, disable=not verbose, desc=self.name):
-                seq_h5 = sanitize_string(seq)
-                if seq_h5 in h5fi:
-                    print(f"{seq} already in h5file")
-                feats = self.transform(seq)
-                dset = h5fi.require_dataset(seq_h5, feats.shape, np.float32)
-                dset[:] = feats.cpu().numpy()
+        if str(out_path).endswith('.h5'):
+            print(f"Writing {self.name} features to {out_path}")
+            with h5py.File(out_path, "a") as h5fi:
+                for seq in tqdm(seq_list, disable=not verbose, desc=self.name):
+                    seq_h5 = sanitize_string(seq)
+                    if seq_h5 in h5fi:
+                        print(f"{seq} already in h5file")
+                    feats = self.transform(seq)
+                    dset = h5fi.require_dataset(seq_h5, feats.shape, np.float32)
+                    dset[:] = feats.cpu().numpy()
+        elif str(out_path).endswith('.pt'):
+            features = {}
+            seq_set = set(seq_list)
+            for seq in tqdm(seq_set, disable=not verbose, desc=self.name):
+                features[seq] = self.transform(seq)
+            torch.save(features,out_path)
 
     def preload(
         self,
         seq_list: T.List[str],
         verbose: bool = True,
         write_first: bool = True,
+        single_file: bool = True,
     ) -> None:
         print(f"Preloading {self.name} features from {self.path}")
 
@@ -143,18 +156,21 @@ class Featurizer:
             self.write_to_disk(seq_list, verbose=verbose)
 
         if self._save_path.exists():
-            with h5py.File(self._save_path, "r") as h5fi:
-                for seq in tqdm(seq_list, disable=not verbose, desc=self.name):
-                    if seq in h5fi:
+            if str(self._save_path).endswith('.h5'):
+                with h5py.File(self._save_path, "r") as h5fi:
+                    for seq in tqdm(seq_list, disable=not verbose, desc=self.name):
                         seq_h5 = sanitize_string(seq)
-                        feats = torch.from_numpy(h5fi[seq_h5][:])
-                    else:
-                        feats = self.transform(seq)
+                        if seq_h5 in h5fi:
+                            feats = torch.from_numpy(h5fi[seq_h5][:])
+                        else:
+                            feats = self.transform(seq)
 
-                    if self._on_cuda:
-                        feats = feats.to(self.device)
+                        if self._on_cuda:
+                            feats = feats.to(self.device)
 
-                    self._features[seq] = feats
+                        self._features[seq] = feats
+            elif str(self._save_path).endswith('.pt'):
+                self._features.update(torch.load(self._save_path))
 
         else:
             for seq in tqdm(seq_list, disable=not verbose, desc=self.name):
@@ -164,13 +180,13 @@ class Featurizer:
                     feats = feats.to(self.device)
 
                 self._features[seq] = feats
+            self._preloaded = True
 
         # seqs_sanitized = [sanitize_string(s) for s in seq_list]
         # feat_dict = load_hdf5_parallel(self._save_path, seqs_sanitized,n_jobs=32)
         # self._features.update(feat_dict)
 
         self._update_device(self.device)
-        self._preloaded = True
 
 class MorganFeaturizer(Featurizer):
     def __init__(
@@ -178,8 +194,9 @@ class MorganFeaturizer(Featurizer):
         shape: int = 2048,
         radius: int = 2,
         save_dir: Path = Path().absolute(),
+        ext: str = "h5",
     ):
-        super().__init__("Morgan", shape, save_dir)
+        super().__init__("Morgan", shape, save_dir, ext)
 
         self._radius = radius
 

@@ -634,7 +634,7 @@ class DUDEDataModule(pl.LightningDataModule):
         self._device = device
         self._n_neg_per = n_neg_per
 
-        self._data_dir = Path("./dataset/DUDe/")
+        self._data_dir = Path("./data/DUDe/")
         self._split = contrastive_split
         self._split_path = self._data_dir / Path(f"dude_{self._split}_type_train_test_split.csv")
 
