@@ -1,7 +1,11 @@
+import numpy as np
 import torch
 from torch import nn
 import torch.nn.functional as F
 from contrastive_loss import MarginScheduledLossFunction
+from torch_geometric.nn import GATv2Conv, global_mean_pool
+
+from utils import Molecule
 
 import pytorch_lightning as pl
 import torchmetrics
@@ -115,6 +119,24 @@ class Learned_Aggregation_Layer(nn.Module):
         self.proj = nn.Linear(dim, dim)
         self.proj_drop = nn.Dropout(proj_drop)
 
+    def get_attn(self, x: torch.Tensor) -> torch.Tensor:
+        # B is batch size, N is number of tokens in a given sequence, C is embedding dimension size
+        B, N, C = x.shape
+        cls_tokens = self.cls_token.repeat(B, 1, 1)
+        q = self.q(cls_tokens).reshape(B, 1, self.num_heads, C // self.num_heads).permute(0, 2, 1, 3)
+        k = self.k(x).reshape(B, N, self.num_heads, C // self.num_heads).permute(0, 2, 1, 3)
+
+        q = q * self.scale
+        v = self.v(x).reshape(B, N, self.num_heads, C // self.num_heads).permute(0, 2, 1, 3)
+
+        attn = q @ k.transpose(-2, -1)
+        attn = self.id(attn)
+        attn = attn.softmax(dim=-1)
+        attn = self.attn_drop(attn)
+
+        return attn.reshape(B, N)
+
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         B, N, C = x.shape
         cls_tokens = self.cls_token.repeat(B, 1, 1)
@@ -154,6 +176,20 @@ class AverageNonZeroVectors(torch.nn.Module):
 
         return batch_avg
 
+class GNN(torch.nn.Module):
+    def __init__(self, in_channels, hidden_channels, out_channels):
+        super(GNN, self).__init__()
+        self.conv1 = GATv2Conv(in_channels, hidden_channels)
+        self.conv2 = GATv2Conv(hidden_channels, hidden_channels)
+        self.conv3 = GATv2Conv(hidden_channels, out_channels)
+    
+    def forward(self, data):
+        x, edge_index = data.x, data.edge_index
+        x = self.conv1(x, edge_index).relu()
+        x = self.conv2(x, edge_index).relu()
+        x = self.conv3(x, edge_index)
+        return global_mean_pool(x, data.batch)
+
 class DrugTargetCoembeddingLightning(pl.LightningModule):
     def __init__(
         self,
@@ -182,17 +218,26 @@ class DrugTargetCoembeddingLightning(pl.LightningModule):
         self.args = args
         self.device_ = device
 
-        self.drug_projector = nn.Sequential(
-            nn.Linear(self.drug_dim, self.latent_dim), self.activation()
-        )
-        nn.init.xavier_normal_(self.drug_projector[0].weight)
+        if self.args.drug_featurizer == "GraphFeaturizer":
+            self.drug_projector = nn.Sequential(
+                GNN(in_channels=133, hidden_channels=720, out_channels=self.latent_dim)
+            )
+        else:
+            self.drug_projector = nn.Sequential(
+                nn.Linear(self.drug_dim, self.latent_dim), self.activation()
+            )
+            nn.init.xavier_normal_(self.drug_projector[0].weight)
 
         
+        self.avg_projector = AverageNonZeroVectors()
         protein_projector=nn.Sequential(AverageNonZeroVectors(), nn.Linear(self.target_dim, self.latent_dim))
         if args.prot_proj == "transformer":
             protein_projector = TargetEmbedding( self.target_dim, self.latent_dim, num_layers_target, dropout=dropout, out_type=args.out_type)
         elif args.prot_proj == "agg":
-            protein_projector = nn.Sequential(Learned_Aggregation_Layer(self.target_dim, attn_drop=dropout, proj_drop=dropout), nn.Linear(self.target_dim, self.latent_dim))
+            protein_projector = nn.Sequential(
+                Learned_Aggregation_Layer(self.target_dim, attn_drop=dropout, proj_drop=dropout, num_heads=args.num_heads),
+                nn.Linear(self.target_dim, self.latent_dim)
+            )
 
         self.target_projector = nn.Sequential(
                 protein_projector,
@@ -232,6 +277,24 @@ class DrugTargetCoembeddingLightning(pl.LightningModule):
         self.val_step_targets = []
         self.test_step_outputs = []
         self.test_step_targets = []
+
+    def get_target_cls_distance(self, target):
+        """
+        Get the L2 difference between the representation from learned aggregation vs averaging.
+        """
+        agg_cls = self.target_projector[0](target)
+        avg_cls = self.avg_projector(target)
+
+        agg_cls = F.normalize(agg_cls, dim=1).detach().cpu().numpy()
+        avg_cls = F.normalize(avg_cls, dim=1).detach().cpu().numpy()
+        dist = np.linalg.norm(agg_cls  - avg_cls , axis=1)
+        # print(np.linalg.norm(agg_cls), np.linalg.norm(avg_cls))
+
+        return dist
+
+    def get_attn_matrix(self, target):
+        return self.target_projector[0][0].get_attn(target).detach().cpu().numpy()
+
 
     def forward(self, drug, target):
         drug_projection = self.drug_projector(drug)
@@ -363,7 +426,7 @@ class DrugTargetCoembeddingLightning(pl.LightningModule):
             if self.classify:
                 metric(torch.Tensor(self.test_step_outputs), torch.Tensor(self.test_step_targets).to(torch.int))
             else:
-                metric(torch.Tensor(self.test_step_outputs), torch.Tensor(self.test_step_targets).to(torch.float))
+                metric(torch.Tensor(self.test_step_outputs).cuda(), torch.Tensor(self.test_step_targets).to(torch.float).cuda())
             self.log(f"test/{name}", metric, on_step=False, on_epoch=True)
 
         self.test_step_outputs.clear()

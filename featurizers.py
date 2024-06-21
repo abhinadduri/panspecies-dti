@@ -7,11 +7,13 @@ import typing as T
 from pathlib import Path
 from functools import lru_cache
 from tqdm import tqdm
+from torch_geometric.data import Data
 from transformers import AutoTokenizer, AutoModel, pipeline
 from rdkit.Chem import AllChem as Chem
 from rdkit import DataStructs
 from rdkit.Chem.rdmolops import RDKFingerprint
-from utils import canonicalize
+
+from utils import canonicalize, Molecule
 
 def sanitize_string(s):
     return s.replace("/", "|")
@@ -168,6 +170,109 @@ class Featurizer:
         # seqs_sanitized = [sanitize_string(s) for s in seq_list]
         # feat_dict = load_hdf5_parallel(self._save_path, seqs_sanitized,n_jobs=32)
         # self._features.update(feat_dict)
+
+        self._update_device(self.device)
+        self._preloaded = True
+
+class GraphFeaturizer(Featurizer):
+    def __init__(self, save_dir: Path = Path().absolute()):
+        super().__init__("Graph", save_dir)
+        self._save_path = save_dir / Path(f"{self._name}_features.h5")
+
+    def smiles_to_graph(self, smile: str) -> Data:
+        try:
+            smile = canonicalize(smile)
+            mol = Chem.MolFromSmiles(smile)
+            
+            # Get atom features
+            atoms = [atom for atom in mol.GetAtoms()]
+            atom_features = torch.stack([Molecule.stokes_features(atom) for atom in atoms])
+            
+            # Get bond features and edge indices
+            bonds = [bond for bond in mol.GetBonds()]
+            edge_index = []
+            edge_attr = []
+            for bond in bonds:
+                i = bond.GetBeginAtomIdx()
+                j = bond.GetEndAtomIdx()
+                edge_index.append((i, j))
+                edge_index.append((j, i))  # Add both directions
+                edge_attr.append(Molecule.bond_features(bond))
+                edge_attr.append(Molecule.bond_features(bond))  # Add both directions
+            
+            edge_index = torch.tensor(edge_index, dtype=torch.long).t().contiguous()
+            edge_attr = torch.tensor(edge_attr, dtype=torch.float)
+            
+            graph_data = Data(x=atom_features, edge_index=edge_index, edge_attr=edge_attr)
+        except Exception as e:
+            print(f"rdkit not found this smiles for graph: {smile}")
+            print(e)
+            graph_data = Data(x=torch.zeros((1, 133), dtype=torch.float),
+                              edge_index=torch.zeros((2, 1), dtype=torch.long),
+                              edge_attr=torch.zeros((1, 4), dtype=torch.float))
+        
+        return graph_data
+
+    def _transform(self, smile: str) -> Data:
+        return self.smiles_to_graph(smile)
+
+    def write_to_disk(
+        self, smiles_list: T.List[str], verbose: bool = True, file_path: Path = None
+    ) -> None:
+        if file_path is not None:
+            out_path = file_path
+        else:
+            out_path = self._save_path
+
+        print(f"Writing {self.name} features to {out_path}")
+        with h5py.File(out_path, "a") as h5fi:
+            for smile in tqdm(smiles_list, disable=not verbose, desc=self.name):
+                seq_h5 = sanitize_string(smile)
+                if seq_h5 in h5fi:
+                    print(f"{smile} already in h5file")
+                    continue
+                graph = self.transform(smile)
+                group = h5fi.create_group(seq_h5)
+                group.create_dataset('x', data=graph.x.cpu().numpy())
+                group.create_dataset('edge_index', data=graph.edge_index.cpu().numpy())
+
+    def preload(
+        self,
+        smiles_list: T.List[str],
+        verbose: bool = True,
+        write_first: bool = True,
+    ) -> None:
+        print(f"Preloading {self.name} features from {self.path}")
+
+        if write_first and not self._save_path.exists():
+            self.write_to_disk(smiles_list, verbose=verbose)
+
+        if self._save_path.exists():
+            with h5py.File(self._save_path, "r") as h5fi:
+                for smile in tqdm(smiles_list, disable=not verbose, desc=self.name):
+                    seq_h5 = sanitize_string(smile)
+                    if seq_h5 in h5fi:
+                        x = torch.from_numpy(h5fi[seq_h5]['x'][:])
+                        edge_index = torch.from_numpy(h5fi[seq_h5]['edge_index'][:])
+                        graph = Data(x=x, edge_index=edge_index)
+                    else:
+                        graph = self.transform(smile)
+
+                    if self._on_cuda:
+                        graph.x = graph.x.to(self.device)
+                        graph.edge_index = graph.edge_index.to(self.device)
+
+                    self._features[smile] = graph
+
+        else:
+            for smile in tqdm(smiles_list, disable=not verbose, desc=self.name):
+                graph = self.transform(smile)
+
+                if self._on_cuda:
+                    graph.x = graph.x.to(self.device)
+                    graph.edge_index = graph.edge_index.to(self.device)
+
+                self._features[smile] = graph
 
         self._update_device(self.device)
         self._preloaded = True

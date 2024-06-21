@@ -7,6 +7,7 @@ model_architecture: SimpleCoembeddingNoSigmoid
 latent_dimension: 1024
 latent_distance: "Cosine"
 prot-proj: "agg"
+num_heads: 1
 num_layers_target: 1
 dropout: 0.05
 

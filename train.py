@@ -37,7 +37,7 @@ parser.add_argument("--task", choices=[
     "dti_dg",
     ], type=str, help="Task name. Could be biosnap, bindingdb, davis, biosnap_prot, biosnap_mol, dti_dg.",
 )
-parser.add_argument("--drug-featurizer", help="Drug featurizer", dest="drug_featurizer")
+parser.add_argument("--drug-featurizer", default="morgan", choices=["MorganFeaturizer", "GraphFeaturizer"], help="Drug featurizer", dest="drug_featurizer")
 parser.add_argument("--target-featurizer", help="Target featurizer", dest="target_featurizer")
 parser.add_argument("--distance-metric", help="Distance in embedding space to supervise with", dest="distance_metric")
 parser.add_argument("--epochs", type=int, help="number of total epochs to run")
@@ -48,6 +48,7 @@ parser.add_argument("--d", "--device", default=0, type=int, help="CUDA device", 
 parser.add_argument("--verbosity", type=int, help="Level at which to log", dest="verbosity")
 parser.add_argument("--checkpoint", default=None, help="Model weights to start from")
 parser.add_argument('--prot-proj', default="avg", choices=["avg","agg","transformer", "genagg"], help="Change the protein projector method")
+parser.add_argument('--num-heads', type=int, default=1, help="Change the number of attention heads used")
 parser.add_argument('--out-type', default="cls", choices=['cls','mean'], help="use cls token or mean of everything else")
 
 parser.add_argument("--num-layers-target", type=int, help="Number of layers in target transformer", dest="num_layers_target")
@@ -71,6 +72,7 @@ print(f"Using CUDA device {device}")
 # Set random state
 print(f"Setting random state {config.replicate}")
 torch.manual_seed(config.replicate)
+torch.set_float32_matmul_precision('medium')
 np.random.seed(config.replicate)
 
 # Load data
@@ -98,7 +100,7 @@ elif config.task in EnzPredDataModule.dataset_list():
     RuntimeError("EnzPredDataModule not implemented yet")
 else:
     config.classify = True
-    config.watch_metric = "val/aupr"
+    config.watch_metric = "val/f1"
     datamodule = DTIDataModule(
             task_dir,
             drug_featurizer,
