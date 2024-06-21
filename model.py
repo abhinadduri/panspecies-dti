@@ -220,7 +220,7 @@ class DrugTargetCoembeddingLightning(pl.LightningModule):
 
         if self.args.drug_featurizer == "GraphFeaturizer":
             self.drug_projector = nn.Sequential(
-                GNN(in_channels=133, hidden_channels=512, out_channels=self.latent_dim)
+                GNN(in_channels=133, hidden_channels=720, out_channels=self.latent_dim)
             )
         else:
             self.drug_projector = nn.Sequential(
@@ -426,7 +426,7 @@ class DrugTargetCoembeddingLightning(pl.LightningModule):
             if self.classify:
                 metric(torch.Tensor(self.test_step_outputs), torch.Tensor(self.test_step_targets).to(torch.int))
             else:
-                metric(torch.Tensor(self.test_step_outputs), torch.Tensor(self.test_step_targets).to(torch.float))
+                metric(torch.Tensor(self.test_step_outputs).cuda(), torch.Tensor(self.test_step_targets).to(torch.float).cuda())
             self.log(f"test/{name}", metric, on_step=False, on_epoch=True)
 
         self.test_step_outputs.clear()

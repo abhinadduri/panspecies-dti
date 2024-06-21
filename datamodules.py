@@ -60,6 +60,10 @@ def drug_target_collate_fn(args: T.Tuple[T.Union[torch.Tensor, torch_geometric.d
         # Morgan fingerprint case: stack tensors
         drugs = torch.stack(d_emb, 0)
     else:
+        for data in d_emb:
+            if 'edge_attr' not in data:
+                data.edge_attr = torch.zeros((data.edge_index.size(1) // 2, 4), dtype=torch.float)
+
         # Graph case: batch using torch_geometric's Batch
         drugs = Batch.from_data_list(d_emb)
 

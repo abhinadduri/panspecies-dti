@@ -84,7 +84,7 @@ target_featurizer = get_featurizer(config.target_featurizer, save_dir=task_dir)
 
 if config.task == 'dti_dg':
     config.classify = False
-    config.watch_metric = "val/f1"
+    config.watch_metric = "val/pcc"
     datamodule = TDCDataModule(
             task_dir,
             drug_featurizer,
