@@ -215,8 +215,8 @@ class DrugTargetCoembeddingLightning(pl.LightningModule):
             }
             self.loss_fct = torch.nn.BCELoss()
         else:
-            self.val_mse = torchmetrics.MeanSquaredError().to(self.device_)
-            self.val_pcc = torchmetrics.PearsonCorrCoef().to(self.device_)
+            self.val_mse = torchmetrics.MeanSquaredError()
+            self.val_pcc = torchmetrics.PearsonCorrCoef()
             self.metrics = {"mse": self.val_mse, "pcc": self.val_pcc}
             self.loss_fct = torch.nn.MSELoss()
 
@@ -340,7 +340,7 @@ class DrugTargetCoembeddingLightning(pl.LightningModule):
             if self.classify:
                 metric(torch.Tensor(self.val_step_outputs), torch.Tensor(self.val_step_targets).to(torch.int))
             else:
-                metric(torch.Tensor(self.val_step_outputs).cuda(), torch.Tensor(self.val_step_targets).to(torch.float).cuda())
+                metric(torch.Tensor(self.val_step_outputs), torch.Tensor(self.val_step_targets).to(torch.float))
             self.log(f"val/{name}", metric, on_step=False, on_epoch=True)
 
         self.val_step_outputs.clear()
@@ -363,7 +363,7 @@ class DrugTargetCoembeddingLightning(pl.LightningModule):
             if self.classify:
                 metric(torch.Tensor(self.test_step_outputs), torch.Tensor(self.test_step_targets).to(torch.int))
             else:
-                metric(torch.Tensor(self.test_step_outputs).cuda(), torch.Tensor(self.test_step_targets).to(torch.float).cuda())
+                metric(torch.Tensor(self.test_step_outputs), torch.Tensor(self.test_step_targets).to(torch.float))
             self.log(f"test/{name}", metric, on_step=False, on_epoch=True)
 
         self.test_step_outputs.clear()
