@@ -19,6 +19,7 @@ from datamodules import (
         TDCDataModule,
         DUDEDataModule,
         EnzPredDataModule,
+        CombinedDataModule,
         )
 from model import DrugTargetCoembeddingLightning
 from trainloop import ConPlexEpochLoop
@@ -42,7 +43,7 @@ parser.add_argument("--target-featurizer", help="Target featurizer", dest="targe
 parser.add_argument("--distance-metric", help="Distance in embedding space to supervise with", dest="distance_metric")
 parser.add_argument("--epochs", type=int, help="number of total epochs to run")
 parser.add_argument("--lr", "--learning-rate", type=float, help="initial learning rate", dest="lr",)
-parser.add_argument("--clr", type=float, help="initial learning rate", dest="clr")
+parser.add_argument("--clr", type=float, help="contrastive initial learning rate", dest="clr")
 parser.add_argument("--r", "--replicate", type=int, help="Replicate", dest="replicate")
 parser.add_argument("--d", "--device", default=0, type=int, help="CUDA device", dest="device")
 parser.add_argument("--verbosity", type=int, help="Level at which to log", dest="verbosity")
@@ -53,6 +54,7 @@ parser.add_argument('--out-type', default="cls", choices=['cls','mean'], help="u
 parser.add_argument("--num-layers-target", type=int, help="Number of layers in target transformer", dest="num_layers_target")
 parser.add_argument("--dropout", type=float, help="Dropout rate for transformer", dest="dropout")
 parser.add_argument("--batch-size", type=int, default=32, help="batch size for training/val/test")
+parser.add_argument("--no-wandb", action="store_true", help="Do not use wandb")
 
 args = parser.parse_args()
 config = OmegaConf.load(args.config)
@@ -80,53 +82,67 @@ task_dir = get_task_dir(config.task)
 drug_featurizer = get_featurizer(config.drug_featurizer, save_dir=task_dir)
 target_featurizer = get_featurizer(config.target_featurizer, save_dir=task_dir)
 
+# Set up task dm arguments
 if config.task == 'dti_dg':
     config.classify = False
     config.watch_metric = "val/pcc"
-    datamodule = TDCDataModule(
-            task_dir,
-            drug_featurizer,
-            target_featurizer,
-            device=device,
-            seed=config.replicate,
-            batch_size=config.batch_size,
-            shuffle=config.shuffle,
-            num_workers=config.num_workers,
-        )
+    task_dm_kwargs = {
+            "data_dir": task_dir,
+            "drug_featurizer": drug_featurizer,
+            "target_featurizer": target_featurizer,
+            "device": device,
+            "seed": config.replicate,
+            "batch_size": config.batch_size,
+            "shuffle": config.shuffle,
+            "num_workers": config.num_workers,
+            }
 elif config.task in EnzPredDataModule.dataset_list():
     # Not implemented yet
     RuntimeError("EnzPredDataModule not implemented yet")
 else:
     config.classify = True
     config.watch_metric = "val/aupr"
-    datamodule = DTIDataModule(
-            task_dir,
-            drug_featurizer,
-            target_featurizer,
-            device=device,
-            batch_size=config.batch_size,
-            shuffle=config.shuffle,
-            num_workers=config.num_workers,
-        )
-datamodule.prepare_data()
-datamodule.setup()
+    task_dm_kwargs = {
+            "data_dir": task_dir,
+            "drug_featurizer": drug_featurizer,
+            "target_featurizer": target_featurizer,
+            "device": device,
+            "batch_size": config.batch_size,
+            "shuffle": config.shuffle,
+            "num_workers": config.num_workers,
+            }
 
 if config.contrastive:
     print("Loading contrastive data (DUDE)")
-    dude_drug_featurizer = get_featurizer(config.drug_featurizer, save_dir=get_task_dir("DUDe"))
+    dude_drug_featurizer = get_featurizer(config.drug_featurizer, save_dir=get_task_dir("DUDe"), ext='pt')
     dude_target_featurizer = get_featurizer(config.target_featurizer, save_dir=get_task_dir("DUDe"))
 
-    contrastive_datamodule = DUDEDataModule(
-            config.contrastive_split,
-            dude_drug_featurizer,
-            dude_target_featurizer,
-            device=device,
-            batch_size=config.contrastive_batch_size,
-            shuffle=config.shuffle,
-            num_workers=config.num_workers,
+    contrastive_dm_kwargs = {
+            "contrastive_split": config.contrastive_split,
+            "drug_featurizer": dude_drug_featurizer,
+            "target_featurizer": dude_target_featurizer,
+            "device": device,
+            "batch_size": config.contrastive_batch_size,
+            "shuffle": config.shuffle,
+            "num_workers": config.num_workers,
+            }
+
+    datamodule = CombinedDataModule(
+            task=config.task,
+            task_kwargs=task_dm_kwargs,
+            contrastive_kwargs=contrastive_dm_kwargs,
             )
-    contrastive_datamodule.prepare_data()
-    contrastive_datamodule.setup(stage="fit")
+    config.epochs *= 2
+else:
+    if config.task == 'dti_dg':
+        datamodule = TDCDataModule(**task_dm_kwargs)
+    elif config.task in EnzPredDataModule.dataset_list():
+        RuntimeError("EnzPredDataModule not implemented yet")
+    else:
+        datamodule = DTIDataModule(**task_dm_kwargs)
+
+datamodule.prepare_data()
+datamodule.setup()
 
 # Load model
 if args.checkpoint:
@@ -157,30 +173,28 @@ else:
         args=config
     )
 
-wandb_logger = WandbLogger(project=config.wandb_proj, log_model="all")
-wandb_logger.watch(model)
-wandb_logger.experiment.config.update(config)
+if not config.no_wandb:
+    wandb_logger = WandbLogger(project=config.wandb_proj, entity="andmcnutt",log_model="gradients")
+    wandb_logger.watch(model)
+    wandb_logger.experiment.config.update(OmegaConf.to_container(config, resolve=True, throw_on_missing=True))
 
 checkpoint_callback = pl.callbacks.ModelCheckpoint(monitor=config.watch_metric, mode="max", filename=config.task, verbose=True)
 # Train model
 trainer = pl.Trainer(
         accelerator="auto",
         devices="auto",
-        logger=wandb_logger,
+        logger=wandb_logger if not config.no_wandb else None,
         max_epochs=config.epochs,
-        callbacks=[checkpoint_callback]
+        callbacks=[checkpoint_callback],
+        reload_dataloaders_every_n_epochs=1 if config.contrastive else 0,
         )
-if config.contrastive == True:
-    trainer.training_epoch_loop = ConPlexEpochLoop(contrastive=config.contrastive)
-    train_dataloaders = [datamodule.train_dataloader(), contrastive_datamodule.train_dataloader()]
-else:
-    train_dataloaders = datamodule.train_dataloader()
 trainer.fit(
         model,
-        train_dataloaders=train_dataloaders,
-        val_dataloaders=datamodule.val_dataloader(),
+        datamodule=datamodule,
         )
 
+wandb.save(f'{config.task}.ckpt')
+
 # Test model using best weights
-trainer.test(dataloaders=datamodule.test_dataloader(), ckpt_path=checkpoint_callback.best_model_path)
+trainer.test(datamodule=datamodule, ckpt_path=checkpoint_callback.best_model_path)
 
