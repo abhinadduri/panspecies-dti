@@ -145,8 +145,10 @@ datamodule.prepare_data()
 datamodule.setup()
 
 # Load model
-print("Initializing model")
-model = DrugTargetCoembeddingLightning(
+if args.checkpoint:
+    print(f"Loading model from checkpoint: {args.checkpoint}")
+    model = DrugTargetCoembeddingLightning.load_from_checkpoint(
+        args.checkpoint,
         drug_dim=drug_featurizer.shape,
         target_dim=target_featurizer.shape,
         latent_dim=config.latent_dimension,
@@ -154,8 +156,22 @@ model = DrugTargetCoembeddingLightning(
         contrastive=config.contrastive,
         num_layers_target=config.num_layers_target,
         dropout=config.dropout,
+        device=device,
         args=config
-        )
+    )
+else:
+    print("Initializing new model")
+    model = DrugTargetCoembeddingLightning(
+        drug_dim=drug_featurizer.shape,
+        target_dim=target_featurizer.shape,
+        latent_dim=config.latent_dimension,
+        classify=config.classify,
+        contrastive=config.contrastive,
+        num_layers_target=config.num_layers_target,
+        dropout=config.dropout,
+        device=device,
+        args=config
+    )
 
 if not config.no_wandb:
     wandb_logger = WandbLogger(project=config.wandb_proj, entity="andmcnutt",log_model="gradients")

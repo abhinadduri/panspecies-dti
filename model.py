@@ -167,6 +167,7 @@ class DrugTargetCoembeddingLightning(pl.LightningModule):
         dropout=0,
         lr=1e-4,
         contrastive=False,
+        device='cpu',
         args=None,
     ):
         super().__init__()
@@ -180,6 +181,7 @@ class DrugTargetCoembeddingLightning(pl.LightningModule):
         self.classify = classify
         self.contrastive = contrastive
         self.args = args
+        self.device_ = device
 
         self.drug_projector = nn.Sequential(
             nn.Linear(self.drug_dim, self.latent_dim), self.activation()
@@ -214,8 +216,8 @@ class DrugTargetCoembeddingLightning(pl.LightningModule):
             }
             self.loss_fct = torch.nn.BCELoss()
         else:
-            self.val_mse = torchmetrics.MeanSquaredError()
-            self.val_pcc = torchmetrics.PearsonCorrCoef()
+            self.val_mse = torchmetrics.MeanSquaredError().to(self.device_)
+            self.val_pcc = torchmetrics.PearsonCorrCoef().to(self.device_)
             self.metrics = {"mse": self.val_mse, "pcc": self.val_pcc}
             self.loss_fct = torch.nn.MSELoss()
 
@@ -343,7 +345,10 @@ class DrugTargetCoembeddingLightning(pl.LightningModule):
 
     def on_validation_epoch_end(self):
         for name, metric in self.metrics.items():
-            metric(torch.Tensor(self.val_step_outputs), torch.Tensor(self.val_step_targets).to(torch.int))
+            if self.classify:
+                metric(torch.Tensor(self.val_step_outputs), torch.Tensor(self.val_step_targets).to(torch.int))
+            else:
+                metric(torch.Tensor(self.val_step_outputs).cuda(), torch.Tensor(self.val_step_targets).to(torch.float).cuda())
             self.log(f"val/{name}", metric, on_step=False, on_epoch=True)
 
         self.val_step_outputs.clear()
@@ -363,7 +368,10 @@ class DrugTargetCoembeddingLightning(pl.LightningModule):
 
     def on_test_epoch_end(self):
         for name, metric in self.metrics.items():
-            metric(torch.Tensor(self.test_step_outputs), torch.Tensor(self.test_step_targets).to(torch.int))
+            if self.classify:
+                metric(torch.Tensor(self.test_step_outputs), torch.Tensor(self.test_step_targets).to(torch.int))
+            else:
+                metric(torch.Tensor(self.test_step_outputs).cuda(), torch.Tensor(self.test_step_targets).to(torch.float).cuda())
             self.log(f"test/{name}", metric, on_step=False, on_epoch=True)
 
         self.test_step_outputs.clear()
