@@ -4,6 +4,9 @@ import h5py
 import torch
 import numpy as np
 import typing as T
+import datamol as dm
+
+from molfeat.trans.pretrained.hf_transformers import PretrainedHFTransformer
 from pathlib import Path
 from functools import lru_cache
 from tqdm import tqdm
@@ -187,6 +190,43 @@ class Featurizer:
         # self._features.update(feat_dict)
 
         self._update_device(self.device)
+
+class ChemGPTFeaturizer(Featurizer):
+    def __init__(self, shape: int = 1024, save_dir: Path = Path().absolute(), ext: str = "h5"):
+        super().__init__("ChemGPT", shape, save_dir, ext)
+        self.transformer = PretrainedHFTransformer(kind='ChemGPT-19M', notation='selfies', dtype=float)
+
+    def _transform(self, smile: str) -> torch.Tensor:
+        try:
+            mol = dm.to_mol(smile)
+            if mol is None:
+                raise ValueError(f"Invalid SMILES: {smile}")
+            features = self.transformer([smile])
+            return torch.from_numpy(features[0]).float()
+        except Exception as e:
+            print(f"Error featurizing SMILES {smile}: {e}")
+            return torch.zeros(self.shape)
+
+    def write_to_disk(self, seq_list: List[str], verbose: bool = True, file_path: Path = None) -> None:
+        if file_path is not None:
+            out_path = file_path
+        else:
+            out_path = self._save_path
+
+        print(f"Writing {self.name} features to {out_path}")
+        
+        with h5py.File(out_path, "a") as h5fi:
+            for seq in tqdm(seq_list, disable=not verbose, desc=self.name):
+                seq_h5 = sanitize_string(seq)
+                if seq_h5 in h5fi:
+                    logger.info(f"{seq} already in h5file")
+                    continue
+                try:
+                    feats = self.transform(seq)
+                    dset = h5fi.require_dataset(seq_h5, feats.shape, np.float32)
+                    dset[:] = feats.cpu().numpy()
+                except Exception as e:
+                    logger.error(f"Error processing {seq}: {e}")
 
 class MorganFeaturizer(Featurizer):
     def __init__(

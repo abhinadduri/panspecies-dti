@@ -3,7 +3,6 @@ from rdkit import Chem
 from torch.nn.init import xavier_normal_
 
 def get_featurizer(featurizer_string, *args, **kwargs):
-
     return getattr(featurizers, featurizer_string)(*args, **kwargs)
 
 def xavier_normal(model):
