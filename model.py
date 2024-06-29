@@ -186,9 +186,9 @@ class DrugTargetCoembeddingLightning(pl.LightningModule):
         self.device_ = device
 
         self.drug_projector = nn.Sequential(
-            nn.Linear(self.drug_dim, self.latent_dim), self.activation()
-            # nn.Linear(self.drug_dim, 1260), self.activation(),
-            # nn.Linear(1260, self.latent_dim), self.activation()
+            # nn.Linear(self.drug_dim, self.latent_dim), self.activation()
+            nn.Linear(self.drug_dim, 1260), self.activation(),
+            nn.Linear(1260, self.latent_dim), self.activation()
         )
         nn.init.xavier_normal_(self.drug_projector[0].weight)
 
