@@ -117,6 +117,8 @@ class Learned_Aggregation_Layer(nn.Module):
         self.proj_drop = nn.Dropout(proj_drop)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        if x.dim() == 2:
+            x = x.unsqueeze(0)
         B, N, C = x.shape
         cls_tokens = self.cls_token.repeat(B, 1, 1)
         q = self.q(cls_tokens).reshape(B, 1, self.num_heads, C // self.num_heads).permute(0, 2, 1, 3)
@@ -185,6 +187,8 @@ class DrugTargetCoembeddingLightning(pl.LightningModule):
 
         self.drug_projector = nn.Sequential(
             nn.Linear(self.drug_dim, self.latent_dim), self.activation()
+            # nn.Linear(self.drug_dim, 1260), self.activation(),
+            # nn.Linear(1260, self.latent_dim), self.activation()
         )
         nn.init.xavier_normal_(self.drug_projector[0].weight)
 
@@ -236,6 +240,9 @@ class DrugTargetCoembeddingLightning(pl.LightningModule):
 
     def forward(self, drug, target):
         drug_projection = self.drug_projector(drug)
+        # Add a batch dimension if it's missing
+        if target.dim() == 2:
+            target = target.unsqueeze(0)
         target_projection = self.target_projector(target)
 
         if self.classify:

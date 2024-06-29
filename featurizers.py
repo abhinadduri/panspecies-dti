@@ -5,13 +5,15 @@ import torch
 import numpy as np
 import typing as T
 import datamol as dm
+import esm
 
 from molfeat.trans.pretrained.hf_transformers import PretrainedHFTransformer
 from pathlib import Path
 from functools import lru_cache
 from tqdm import tqdm
 from transformers import AutoTokenizer, AutoModel, pipeline
-from rdkit.Chem import AllChem as Chem
+from rdkit import Chem
+from rdkit.Chem import AllChem
 from rdkit import DataStructs
 from rdkit.Chem.rdmolops import RDKFingerprint
 from utils import canonicalize
@@ -192,9 +194,10 @@ class Featurizer:
         self._update_device(self.device)
 
 class ChemGPTFeaturizer(Featurizer):
-    def __init__(self, shape: int = 1024, save_dir: Path = Path().absolute(), ext: str = "h5"):
-        super().__init__("ChemGPT", shape, save_dir, ext)
-        self.transformer = PretrainedHFTransformer(kind='ChemGPT-19M', notation='selfies', dtype=float)
+    def __init__(self, shape: int = 768, save_dir: Path = Path().absolute(), ext: str = "h5"):
+        super().__init__("RoBertaZinc", shape, save_dir, ext)
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.transformer = PretrainedHFTransformer(kind='Roberta-Zinc480M-102M', notation='selfies', dtype=float, device=device)
 
     def _transform(self, smile: str) -> torch.Tensor:
         try:
@@ -251,7 +254,7 @@ class MorganFeaturizer(Featurizer):
         try:
             smile = canonicalize(smile)
             mol = Chem.MolFromSmiles(smile)
-            features_vec = Chem.GetMorganFingerprintAsBitVect(
+            features_vec = AllChem.GetMorganFingerprintAsBitVect(
                 mol, self._radius, nBits=self.shape
             )
             features = np.zeros((1,))
@@ -271,6 +274,59 @@ class MorganFeaturizer(Featurizer):
             print("Failed to featurize: appending zero vector")
             feats = torch.zeros(self.shape)
         return feats
+
+class ChemGPTAndFptFeaturizer(Featurizer):
+    def __init__(self, chemgpt_shape: int = 256, fp_shape: int = 2048, fp_radius: int = 2, save_dir: Path = Path().absolute(), ext: str = "h5"):
+        total_shape = chemgpt_shape + fp_shape
+        super().__init__("ChemGPTAndFpt", total_shape, save_dir, ext)
+        self.chemgpt_shape = chemgpt_shape
+        self.fp_shape = fp_shape
+        self.fp_radius = fp_radius
+        self.transformer = PretrainedHFTransformer(kind='ChemGPT-19M', notation='selfies', dtype=float)
+
+    def _transform(self, smile: str) -> torch.Tensor:
+        try:
+            # ChemGPT features
+            mol = dm.to_mol(smile)
+            if mol is None:
+                raise ValueError(f"Invalid SMILES: {smile}")
+            chemgpt_features = self.transformer([smile])
+            chemgpt_tensor = torch.from_numpy(chemgpt_features[0]).float()
+
+            # Morgan fingerprint features
+            mol = Chem.MolFromSmiles(smile)
+            fp_vec = AllChem.GetMorganFingerprintAsBitVect(mol, self.fp_radius, nBits=self.fp_shape)
+            fp_array = np.zeros((1,))
+            DataStructs.ConvertToNumpyArray(fp_vec, fp_array)
+            fp_tensor = torch.from_numpy(fp_array).float()
+
+            # Concatenate features
+            return torch.cat([chemgpt_tensor, fp_tensor])
+
+        except Exception as e:
+            print(f"Error featurizing SMILES {smile}: {e}")
+            return torch.zeros(self.shape)
+
+    def write_to_disk(self, seq_list: List[str], verbose: bool = True, file_path: Path = None) -> None:
+        if file_path is not None:
+            out_path = file_path
+        else:
+            out_path = self._save_path
+
+        print(f"Writing {self.name} features to {out_path}")
+        
+        with h5py.File(out_path, "a") as h5fi:
+            for seq in tqdm(seq_list, disable=not verbose, desc=self.name):
+                seq_h5 = sanitize_string(seq)
+                if seq_h5 in h5fi:
+                    print(f"{seq} already in h5file")
+                    continue
+                try:
+                    feats = self.transform(seq)
+                    dset = h5fi.require_dataset(seq_h5, feats.shape, np.float32)
+                    dset[:] = feats.cpu().numpy()
+                except Exception as e:
+                    print(f"Error processing {seq}: {e}")
 
 class ProtBertFeaturizer(Featurizer):
     def __init__(self, save_dir: Path = Path().absolute(), per_tok=False):
@@ -334,3 +390,58 @@ class ProtBertFeaturizer(Featurizer):
 
         # return the entire embedding
         return feats
+
+class ESM2Featurizer(Featurizer):
+    def __init__(self, shape: int = 1280, save_dir: Path = Path().absolute(), ext: str = "h5"):
+        super().__init__("ESM2", shape, save_dir, ext)
+        
+        # Load ESM-2 model
+        self.model, self.alphabet = esm.pretrained.esm2_t33_650M_UR50D()
+        self.batch_converter = self.alphabet.get_batch_converter()
+        
+        # Move model to GPU if available
+        self.device_ = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.model = self.model.to(self.device_)
+        self.model.eval()  # Set the model to evaluation mode
+
+    def _transform(self, seq: str) -> torch.Tensor:
+        try:
+            data = [("protein", seq)]
+            batch_labels, batch_strs, batch_tokens = self.batch_converter(data)
+            batch_tokens = batch_tokens.to(self.device)
+
+            with torch.no_grad():
+                results = self.model(batch_tokens, repr_layers=[33], return_contacts=False)
+            token_embeddings = results["representations"][33]
+
+            # Return the full sequence of embeddings instead of just the CLS token
+            return token_embeddings[0, 1:].squeeze(0)  # This will be a 2D tensor (sequence length, feature dimension)
+
+        except Exception as e:
+            print(f"Error featurizing sequence: {e}")
+            return torch.zeros((1, self.shape), device=self.device)
+        
+    def write_to_disk(self, seq_list: List[str], verbose: bool = True, file_path: Path = None) -> None:
+        if file_path is not None:
+            out_path = file_path
+        else:
+            out_path = self._save_path
+
+        print(f"Writing {self.name} features to {out_path}")
+        
+        with h5py.File(out_path, "a") as h5fi:
+            for seq in tqdm(seq_list, disable=not verbose, desc=self.name):
+                seq_h5 = self.sanitize_string(seq)
+                if seq_h5 in h5fi:
+                    print(f"{seq} already in h5file")
+                    continue
+                try:
+                    feats = self.transform(seq)
+                    dset = h5fi.require_dataset(seq_h5, feats.shape, np.float32)
+                    dset[:] = feats.cpu().numpy()
+                except Exception as e:
+                    print(f"Error processing {seq}: {e}")
+
+    @staticmethod
+    def sanitize_string(s):
+        return ''.join(c if c.isalnum() else '_' for c in s)
