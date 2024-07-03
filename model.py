@@ -196,7 +196,7 @@ class DrugTargetCoembeddingLightning(pl.LightningModule):
                 nn.Linear(1260, self.latent_dim), self.activation()
             )
             nn.init.xavier_normal_(self.drug_projector[0].weight)
-            nn.init.xavier_normal_(self.drug_projector[1].weight)
+            nn.init.xavier_normal_(self.drug_projector[2].weight)
 
 
         
