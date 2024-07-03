@@ -185,12 +185,19 @@ class DrugTargetCoembeddingLightning(pl.LightningModule):
         self.args = args
         self.device_ = device
 
-        self.drug_projector = nn.Sequential(
-            # nn.Linear(self.drug_dim, self.latent_dim), self.activation()
-            nn.Linear(self.drug_dim, 1260), self.activation(),
-            nn.Linear(1260, self.latent_dim), self.activation()
-        )
-        nn.init.xavier_normal_(self.drug_projector[0].weight)
+        if args.drug_layers == 1:
+            self.drug_projector = nn.Sequential(
+                nn.Linear(self.drug_dim, self.latent_dim), self.activation()
+            )
+            nn.init.xavier_normal_(self.drug_projector[0].weight)
+        elif args.drug_layers == 2:
+            self.drug_projector = nn.Sequential(
+                nn.Linear(self.drug_dim, 1260), self.activation(),
+                nn.Linear(1260, self.latent_dim), self.activation()
+            )
+            nn.init.xavier_normal_(self.drug_projector[0].weight)
+            nn.init.xavier_normal_(self.drug_projector[1].weight)
+
 
         
         protein_projector=nn.Sequential(AverageNonZeroVectors(), nn.Linear(self.target_dim, self.latent_dim))

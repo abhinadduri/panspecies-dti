@@ -52,6 +52,7 @@ parser.add_argument('--prot-proj', default="avg", choices=["avg","agg","transfor
 parser.add_argument('--out-type', default="cls", choices=['cls','mean'], help="use cls token or mean of everything else")
 
 parser.add_argument("--num-layers-target", type=int, help="Number of layers in target transformer", dest="num_layers_target")
+parser.add_argument("--drug-layers", type=int, default=2, choices=[1, 2], help="Number of layers in drug transformer", dest="drug_layers")
 parser.add_argument("--dropout", type=float, help="Dropout rate for transformer", dest="dropout")
 parser.add_argument("--batch-size", type=int, default=32, help="batch size for training/val/test")
 parser.add_argument("--no-wandb", action="store_true", help="Do not use wandb")
