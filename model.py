@@ -117,6 +117,8 @@ class Learned_Aggregation_Layer(nn.Module):
         self.proj_drop = nn.Dropout(proj_drop)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        if x.dim() == 2:
+            x = x.unsqueeze(0)
         B, N, C = x.shape
         cls_tokens = self.cls_token.repeat(B, 1, 1)
         q = self.q(cls_tokens).reshape(B, 1, self.num_heads, C // self.num_heads).permute(0, 2, 1, 3)
@@ -184,7 +186,9 @@ class DrugTargetCoembeddingLightning(pl.LightningModule):
         self.device_ = device
 
         self.drug_projector = nn.Sequential(
-            nn.Linear(self.drug_dim, self.latent_dim), self.activation()
+            # nn.Linear(self.drug_dim, self.latent_dim), self.activation()
+            nn.Linear(self.drug_dim, 1260), self.activation(),
+            nn.Linear(1260, self.latent_dim), self.activation()
         )
         nn.init.xavier_normal_(self.drug_projector[0].weight)
 
@@ -216,8 +220,8 @@ class DrugTargetCoembeddingLightning(pl.LightningModule):
             }
             self.loss_fct = torch.nn.BCELoss()
         else:
-            self.val_mse = torchmetrics.MeanSquaredError()
-            self.val_pcc = torchmetrics.PearsonCorrCoef()
+            self.val_mse = torchmetrics.MeanSquaredError().cuda()
+            self.val_pcc = torchmetrics.PearsonCorrCoef().cuda()
             self.metrics = {"mse": self.val_mse, "pcc": self.val_pcc}
             self.loss_fct = torch.nn.MSELoss()
 
@@ -236,6 +240,9 @@ class DrugTargetCoembeddingLightning(pl.LightningModule):
 
     def forward(self, drug, target):
         drug_projection = self.drug_projector(drug)
+        # Add a batch dimension if it's missing
+        if target.dim() == 2:
+            target = target.unsqueeze(0)
         target_projection = self.target_projector(target)
 
         if self.classify:
@@ -348,7 +355,7 @@ class DrugTargetCoembeddingLightning(pl.LightningModule):
             if self.classify:
                 metric(torch.Tensor(self.val_step_outputs), torch.Tensor(self.val_step_targets).to(torch.int))
             else:
-                metric(torch.Tensor(self.val_step_outputs), torch.Tensor(self.val_step_targets).to(torch.float))
+                metric(torch.Tensor(self.val_step_outputs).cuda(), torch.Tensor(self.val_step_targets).to(torch.float).cuda())
             self.log(f"val/{name}", metric, on_step=False, on_epoch=True)
 
         self.val_step_outputs.clear()
@@ -371,7 +378,7 @@ class DrugTargetCoembeddingLightning(pl.LightningModule):
             if self.classify:
                 metric(torch.Tensor(self.test_step_outputs), torch.Tensor(self.test_step_targets).to(torch.int))
             else:
-                metric(torch.Tensor(self.test_step_outputs), torch.Tensor(self.test_step_targets).to(torch.float))
+                metric(torch.Tensor(self.test_step_outputs).cuda(), torch.Tensor(self.test_step_targets).to(torch.float).cuda())
             self.log(f"test/{name}", metric, on_step=False, on_epoch=True)
 
         self.test_step_outputs.clear()

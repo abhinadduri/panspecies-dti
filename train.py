@@ -69,6 +69,7 @@ device_no = config.device
 use_cuda = torch.cuda.is_available()
 device = torch.device(f"cuda:{device_no}" if use_cuda else "cpu")
 print(f"Using CUDA device {device}")
+torch.set_float32_matmul_precision('medium')
 
 # Set random state
 print(f"Setting random state {config.replicate}")
@@ -101,7 +102,7 @@ elif config.task in EnzPredDataModule.dataset_list():
     RuntimeError("EnzPredDataModule not implemented yet")
 else:
     config.classify = True
-    config.watch_metric = "val/aupr"
+    config.watch_metric = "val/f1"
     task_dm_kwargs = {
             "data_dir": task_dir,
             "drug_featurizer": drug_featurizer,
@@ -174,7 +175,7 @@ else:
     )
 
 if not config.no_wandb:
-    wandb_logger = WandbLogger(project=config.wandb_proj, entity="andmcnutt",log_model="gradients")
+    wandb_logger = WandbLogger(project=config.wandb_proj, entity="abhinadduri",log_model="gradients")
     wandb_logger.watch(model)
     wandb_logger.experiment.config.update(OmegaConf.to_container(config, resolve=True, throw_on_missing=True))
 
