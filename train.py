@@ -1,3 +1,7 @@
+import warnings
+warnings.filterwarnings("ignore", category=DeprecationWarning)
+warnings.filterwarnings("ignore", message="please use MorganGenerator", category=DeprecationWarning)
+
 import os
 import numpy as np
 import pandas as pd
@@ -20,10 +24,12 @@ from datamodules import (
         DUDEDataModule,
         EnzPredDataModule,
         CombinedDataModule,
+        MergedDataModule,
         )
 from model import DrugTargetCoembeddingLightning
 from trainloop import ConPlexEpochLoop
 from utils import get_featurizer, xavier_normal
+
 
 parser = argparse.ArgumentParser(description="PLM_DTI Training.")
 parser.add_argument("--exp-id", required=True, help="Experiment ID", dest="experiment_id")
@@ -36,6 +42,7 @@ parser.add_argument("--task", choices=[
     "biosnap_prot",
     "biosnap_mol",
     "dti_dg",
+    "merged",
     ], type=str, help="Task name. Could be biosnap, bindingdb, davis, biosnap_prot, biosnap_mol, dti_dg.",
 )
 parser.add_argument("--drug-featurizer", help="Drug featurizer", dest="drug_featurizer")
@@ -51,6 +58,7 @@ parser.add_argument("--checkpoint", default=None, help="Model weights to start f
 parser.add_argument('--prot-proj', default="avg", choices=["avg","agg","transformer", "genagg"], help="Change the protein projector method")
 parser.add_argument('--out-type', default="cls", choices=['cls','mean'], help="use cls token or mean of everything else")
 
+parser.add_argument("--num-heads", type=int, help="Number of heads for multi-head attention", dest="num_heads")
 parser.add_argument("--num-layers-target", type=int, help="Number of layers in target transformer", dest="num_layers_target")
 parser.add_argument("--drug-layers", type=int, default=2, choices=[1, 2], help="Number of layers in drug transformer", dest="drug_layers")
 parser.add_argument("--dropout", type=float, help="Dropout rate for transformer", dest="dropout")
@@ -103,7 +111,7 @@ elif config.task in EnzPredDataModule.dataset_list():
     RuntimeError("EnzPredDataModule not implemented yet")
 else:
     config.classify = True
-    config.watch_metric = "val/f1"
+    config.watch_metric = "val/aupr"
     task_dm_kwargs = {
             "data_dir": task_dir,
             "drug_featurizer": drug_featurizer,
@@ -140,6 +148,8 @@ else:
         datamodule = TDCDataModule(**task_dm_kwargs)
     elif config.task in EnzPredDataModule.dataset_list():
         RuntimeError("EnzPredDataModule not implemented yet")
+    elif config.task == 'merged':
+        datamodule = MergedDataModule(**task_dm_kwargs)
     else:
         datamodule = DTIDataModule(**task_dm_kwargs)
 

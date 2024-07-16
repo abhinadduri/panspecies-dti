@@ -6,6 +6,7 @@ import numpy as np
 import typing as T
 import datamol as dm
 import esm
+import pandas as pd
 
 from molfeat.trans.pretrained.hf_transformers import PretrainedHFTransformer
 from pathlib import Path
@@ -16,10 +17,16 @@ from rdkit import Chem
 from rdkit.Chem import AllChem
 from rdkit import DataStructs
 from rdkit.Chem.rdmolops import RDKFingerprint
+from rdkit.Chem import rdFingerprintGenerator
 from utils import canonicalize
 
 def sanitize_string(s):
-    return s.replace("/", "|")
+    if isinstance(s, str):
+        return s.replace("/", "|")
+    elif pd.isna(s):
+        return "NA"
+    else:
+        return str(s).replace("/", "|")
 
 class Featurizer:
     def __init__(self, name: str, shape: int, save_dir: Path=Path().absolute(), ext: str="h5"):
@@ -37,7 +44,7 @@ class Featurizer:
     def __call__(self, seq: str) -> torch.Tensor:
         if seq not in self.features:
             seq_h5 = sanitize_string(seq)
-            if not self._preloaded and self._h5 is not None and seq_h5 in self._h5:
+            if not self._preloaded and hasattr(self, '_h5') and self._h5 is not None and seq_h5 in self._h5:
                 return torch.from_numpy(self._h5[seq_h5][:])
             else:
                 self._features[seq] = self.transform(seq)
@@ -137,7 +144,8 @@ class Featurizer:
                 for seq in tqdm(seq_list, disable=not verbose, desc=self.name):
                     seq_h5 = sanitize_string(seq)
                     if seq_h5 in h5fi:
-                        print(f"{seq} already in h5file")
+                        # print(f"{seq} already in h5file")
+                        continue
                     feats = self.transform(seq)
                     dset = h5fi.require_dataset(seq_h5, feats.shape, np.float32)
                     dset[:] = feats.cpu().numpy()
@@ -161,6 +169,7 @@ class Featurizer:
             self.write_to_disk(seq_list, verbose=verbose)
 
         if self._save_path.exists():
+            print(f'Path exists already: {self._save_path}')
             if str(self._save_path).endswith('.h5'):
                 with h5py.File(self._save_path, "r") as h5fi:
                     for seq in tqdm(seq_list, disable=not verbose, desc=self.name):
@@ -251,12 +260,21 @@ class MorganFeaturizer(Featurizer):
         :return: Morgan fingerprint
         :rtype: np.ndarray
         """
+        if not isinstance(smile, str):
+            if pd.isna(smile):
+                print(f"Invalid SMILES: NaN")
+                return np.zeros((self.shape,))
+            else:
+                smile = str(smile)
+
+        fpgen = rdFingerprintGenerator.GetMorganGenerator(radius=self._radius,fpSize=self.shape)
         try:
             smile = canonicalize(smile)
             mol = Chem.MolFromSmiles(smile)
-            features_vec = AllChem.GetMorganFingerprintAsBitVect(
-                mol, self._radius, nBits=self.shape
-            )
+            features_vec = fpgen.GetFingerprint(mol)
+            # features_vec = AllChem.GetMorganFingerprintAsBitVect(
+            #     mol, self._radius, nBits=self.shape
+            # )
             features = np.zeros((1,))
             DataStructs.ConvertToNumpyArray(features_vec, features)
         except Exception as e:

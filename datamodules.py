@@ -12,6 +12,7 @@ from featurizers import Featurizer
 
 from pathlib import Path
 import typing as T
+from typing import Optional
 import os
 
 def get_task_dir(task_name: str):
@@ -36,6 +37,7 @@ def get_task_dir(task_name: str):
         "esterase": "./data/EnzPred/esterase_binary",
         "kinase": "./data/EnzPred/davis_filtered",
         "phosphatase": "./data/EnzPred/phosphatase_chiral_binary",
+        "merged": "./data/MERGED",
     }
 
     return Path(task_paths[task_name.lower()]).resolve()
@@ -740,7 +742,161 @@ class CombinedDataModule(pl.LightningDataModule):
     def test_dataloader(self):
         return self.task_module.test_dataloader()
 
+class MergedDataModule(pl.LightningDataModule):
+    def __init__(
+            self,
+            data_dir: str,
+            drug_featurizer: Featurizer,
+            target_featurizer: Featurizer,
+            device: torch.device = torch.device("cpu"),
+            batch_size: int = 32,
+            shuffle: bool = True,
+            num_workers: int = 0,
+            test_size: float = 0.1,
+            val_size: float = 0.1,
+            random_state: int = 42,
+            header=0,
+            index_col=0,
+            sep=",",
+        ):
+        super().__init__()
 
+        self._loader_kwargs = {
+            "batch_size": batch_size,
+            "shuffle": shuffle,
+            "num_workers": num_workers,
+            "collate_fn": drug_target_collate_fn,
+        }
 
+        self._csv_kwargs = {
+            "header": 'infer',
+            "index_col": None,
+            "sep": None,
+        }
 
+        self._device = device
+        self._data_dir = Path(data_dir)
+        self._merged_file = self._data_dir / "merged_all_data_consolidated.tsv"
+        self._train_file = self._data_dir / "train.csv"
+        self._val_file = self._data_dir / "val.csv"
+        self._test_file = self._data_dir / "test.csv"
 
+        self._drug_column = "ligand"
+        self._target_column = "aa_seq"
+        self._label_column = "activity"
+
+        self.drug_featurizer = drug_featurizer
+        self.target_featurizer = target_featurizer
+
+        self.test_size = test_size
+        self.val_size = val_size
+        self.random_state = random_state
+
+    def prepare_data(self):
+        if not (self._train_file.exists() and self._val_file.exists() and self._test_file.exists()):
+            print("Generating train/val/test splits...")
+            self._generate_splits()
+
+        print(f"drug feat path: {self.drug_featurizer.path}\ntarget path:{self.target_featurizer.path}")
+        if self.drug_featurizer.path.exists() and self.target_featurizer.path.exists():
+            print("Drug and target featurizers already exist")
+            return
+
+        df_train = pd.read_csv(self._train_file, **self._csv_kwargs)
+        df_val = pd.read_csv(self._val_file, **self._csv_kwargs)
+        df_test = pd.read_csv(self._test_file, **self._csv_kwargs)
+
+        dataframes = [df_train, df_val, df_test]
+        all_drugs = pd.concat([i[self._drug_column] for i in dataframes]).unique()
+        all_targets = pd.concat([i[self._target_column] for i in dataframes]).unique()
+
+        if self._device.type == "cuda":
+            self.drug_featurizer.cuda(self._device)
+            self.target_featurizer.cuda(self._device)
+
+        if not self.drug_featurizer.path.exists():
+            self.drug_featurizer.write_to_disk(all_drugs, file_path=self.drug_featurizer.path)
+
+        if not self.target_featurizer.path.exists():
+            self.target_featurizer.write_to_disk(all_targets, file_path=self.target_featurizer.path)
+
+        self.drug_featurizer.cpu()
+        self.target_featurizer.cpu()
+
+    def _generate_splits(self):
+        chunk_size = 100000  # Adjust based on available memory
+        train_data, val_data, test_data = [], [], []
+
+        for chunk in pd.read_csv(self._merged_file, sep='\t', chunksize=chunk_size):
+            train, test = train_test_split(chunk, test_size=self.test_size, random_state=self.random_state)
+            train, val = train_test_split(train, test_size=self.val_size / (1 - self.test_size), random_state=self.random_state)
+            
+            train_data.append(train)
+            val_data.append(val)
+            test_data.append(test)
+
+        train_df = pd.concat(train_data, ignore_index=True)
+        val_df = pd.concat(val_data, ignore_index=True)
+        test_df = pd.concat(test_data, ignore_index=True)
+
+        train_df.to_csv(self._train_file, index=False)
+        val_df.to_csv(self._val_file, index=False)
+        test_df.to_csv(self._test_file, index=False)
+
+    def setup(self, stage: Optional[str] = None):
+        self.df_train = pd.read_csv(self._train_file, **self._csv_kwargs)
+        self.df_val = pd.read_csv(self._val_file, **self._csv_kwargs)
+        self.df_test = pd.read_csv(self._test_file, **self._csv_kwargs)
+
+        print(self.df_val)
+        print(list(self.df_val.columns.values))
+
+        self._dataframes = [self.df_train, self.df_val, self.df_test]
+
+        all_drugs = pd.concat([i[self._drug_column] for i in self._dataframes]).unique()
+        all_targets = pd.concat([i[self._target_column] for i in self._dataframes]).unique()
+
+        if self._device.type == "cuda":
+            self.drug_featurizer.cuda(self._device)
+            self.target_featurizer.cuda(self._device)
+
+        self.drug_featurizer.preload(all_drugs)
+        self.drug_featurizer.cpu()
+
+        self.target_featurizer.preload(all_targets)
+        self.target_featurizer.cpu()
+
+        if stage == "fit" or stage is None:
+            self.data_train = BinaryDataset(
+                self.df_train[self._drug_column],
+                self.df_train[self._target_column],
+                self.df_train[self._label_column],
+                self.drug_featurizer,
+                self.target_featurizer,
+            )
+
+            self.data_val = BinaryDataset(
+                self.df_val[self._drug_column],
+                self.df_val[self._target_column],
+                self.df_val[self._label_column],
+                self.drug_featurizer,
+                self.target_featurizer,
+            )
+
+        if stage == "test" or stage is None:
+            self.data_test = BinaryDataset(
+                self.df_test[self._drug_column],
+                self.df_test[self._target_column],
+                self.df_test[self._label_column],
+                self.drug_featurizer,
+                self.target_featurizer,
+            )
+
+    def train_dataloader(self):
+        return DataLoader(self.data_train, **self._loader_kwargs)
+
+    def val_dataloader(self):
+        return DataLoader(self.data_val, **self._loader_kwargs)
+
+    def test_dataloader(self):
+        return DataLoader(self.data_test, **self._loader_kwargs)

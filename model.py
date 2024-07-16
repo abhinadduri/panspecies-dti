@@ -157,6 +157,16 @@ class AverageNonZeroVectors(torch.nn.Module):
 
         return batch_avg
 
+class GaussianNoise(nn.Module):
+    def __init__(self, std=0.1):
+        super(GaussianNoise, self).__init__()
+        self.std = std
+
+    def forward(self, x):
+        if self.training:
+            return x + torch.randn_like(x) * self.std
+        return x
+
 class DrugTargetCoembeddingLightning(pl.LightningModule):
     def __init__(
         self,
@@ -193,10 +203,11 @@ class DrugTargetCoembeddingLightning(pl.LightningModule):
         elif args.drug_layers == 2:
             self.drug_projector = nn.Sequential(
                 nn.Linear(self.drug_dim, 1260), self.activation(),
+                GaussianNoise(std=0.01),
                 nn.Linear(1260, self.latent_dim), self.activation()
             )
             nn.init.xavier_normal_(self.drug_projector[0].weight)
-            nn.init.xavier_normal_(self.drug_projector[2].weight)
+            nn.init.xavier_normal_(self.drug_projector[-2].weight)
 
 
         
@@ -204,7 +215,11 @@ class DrugTargetCoembeddingLightning(pl.LightningModule):
         if args.prot_proj == "transformer":
             protein_projector = TargetEmbedding( self.target_dim, self.latent_dim, num_layers_target, dropout=dropout, out_type=args.out_type)
         elif args.prot_proj == "agg":
-            protein_projector = nn.Sequential(Learned_Aggregation_Layer(self.target_dim, attn_drop=dropout, proj_drop=dropout), nn.Linear(self.target_dim, self.latent_dim))
+            protein_projector = nn.Sequential(
+                Learned_Aggregation_Layer(self.target_dim, attn_drop=dropout, proj_drop=dropout, num_heads=self.args.num_heads),
+                # GaussianNoise(std=0.01),
+                nn.Linear(self.target_dim, self.latent_dim)
+            )
 
         self.target_projector = nn.Sequential(
                 protein_projector,
