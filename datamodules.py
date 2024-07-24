@@ -36,6 +36,7 @@ def get_task_dir(task_name: str):
         "esterase": "./data/EnzPred/esterase_binary",
         "kinase": "./data/EnzPred/davis_filtered",
         "phosphatase": "./data/EnzPred/phosphatase_chiral_binary",
+        "leash": "./data/leash/",
     }
 
     return Path(task_paths[task_name.lower()]).resolve()
@@ -293,6 +294,45 @@ class DTIDataModule(pl.LightningDataModule):
 
     def test_dataloader(self):
         return DataLoader(self.data_test, **self._loader_kwargs)
+
+class DTIStructDataModule(DTIDataModule):
+    """ DataModule used for training on drug-target interaction data.
+    Uses the following data sets:
+    - biosnap
+    - biosnap_prot
+    - biosnap_mol
+    - bindingdb
+    - davis
+    """
+    def __init__(
+            self,
+            data_dir: str,
+            drug_featurizer: Featurizer,
+            target_featurizer: Featurizer,
+            device: torch.device = torch.device("cpu"),
+            batch_size: int = 32,
+            shuffle: bool = True,
+            num_workers: int = 0,
+            header=0,
+            index_col=0,
+            sep=",",
+        ):
+        super().__init__(
+            data_dir,
+            drug_featurizer,
+            target_featurizer,
+            device,
+            batch_size,
+            shuffle,
+            num_workers,
+            header,
+            index_col,
+            sep,
+        )
+        self._data_dir = Path(data_dir)
+        self._train_path = Path("train_foldseek.csv")
+        self._val_path = Path("val_foldseek.csv")
+        self._test_path = Path("test_foldseek.csv")
 
 class TDCDataModule(pl.LightningDataModule):
     """ DataModule used for training on drug-target interaction data.
@@ -740,7 +780,141 @@ class CombinedDataModule(pl.LightningDataModule):
     def test_dataloader(self):
         return self.task_module.test_dataloader()
 
+class LeashDataModule(pl.LightningDataModule):
+    def __init__(
+            self,
+            data_dir: str,
+            drug_featurizer: Featurizer,
+            target_featurizer: Featurizer,
+            device: torch.device = torch.device("cpu"),
+            batch_size: int = 32,
+            shuffle: bool = True,
+            num_workers: int = 0,
+            header=0,
+            index_col=0,
+            sep=",",
+        ):
+        super().__init__()
+
+        self._loader_kwargs = {
+            "batch_size": batch_size,
+            "shuffle": shuffle,
+            "num_workers": num_workers,
+            "collate_fn": drug_target_collate_fn,
+        }
+
+        self._csv_kwargs = {
+            "header": header,
+            "index_col": index_col,
+            "sep": sep,
+        }
+
+        self._device = device
+
+        self._data_dir = Path(data_dir)
+        self._train_path = Path("train_conplex.csv")
+        # self._val_path = Path("val.csv")
+        self._test_path = Path("test_conplex.csv")
+
+        self._drug_column = "molecule_smiles"
+        self._target_column = "protein_name"
+        self._label_column = "Label"
+
+        self.drug_featurizer = drug_featurizer
+        self.target_featurizer = target_featurizer
+
+    def prepare_data(self):
+        """
+        Featurize drugs and targets and save them to disk if they don't already exist
+        """
+
+        print(f"drug feat path: {self.drug_featurizer.path}\ntarget path:{self.target_featurizer.path}")
+        if self.drug_featurizer.path.exists() and self.target_featurizer.path.exists():
+            print("Drug and target featurizers already exist")
+            return
+
+        df_train = pd.read_csv(self._data_dir / self._train_path, **self._csv_kwargs)
+
+        df_test = pd.read_csv(self._data_dir / self._test_path, **self._csv_kwargs)
+
+        dataframes = [df_train, df_test]
+        # remove "[Dy]" from the drug smiles
+        for df in dataframes:
+            df[self._drug_column] = df[self._drug_column].str.replace("\[Dy\]", "")
+        all_drugs = pd.concat([i[self._drug_column] for i in dataframes]).unique()
+        all_target_names = pd.concat([i[self._target_column] for i in dataframes]).unique()
+        all_targets = []
+        for targ in all_target_names:
+            with open(self._data_dir / f"{targ}.fasta") as f:
+                all_targets.append(f.read().strip())
+
+        if self._device.type == "cuda":
+            self.drug_featurizer.cuda(self._device)
+            self.target_featurizer.cuda(self._device)
+
+        if not self.drug_featurizer.path.exists():
+            self.drug_featurizer.write_to_disk(all_drugs, file_path=self.drug_featurizer.path)
+
+        if not self.target_featurizer.path.exists():
+            self.target_featurizer.write_to_disk(all_targets, file_path=self.target_featurizer.path)
+
+        self.drug_featurizer.cpu()
+        self.target_featurizer.cpu()
+
+    def setup(self, stage = None):
+        self.df_train = pd.read_csv(self._data_dir / self._train_path, **self._csv_kwargs)
+        self.df_val = pd.read_csv(self._data_dir / self._val_path, **self._csv_kwargs)
+        self.df_test = pd.read_csv(self._data_dir / self._test_path, **self._csv_kwargs)
+
+        self._dataframes = [self.df_train, self.df_val, self.df_test]
+        # remove "[Dy]" from the drug smiles
+        for df in self._dataframes:
+            df[self._drug_column] = df[self._drug_column].str.replace("\[Dy\]", "")
+
+        all_drugs = pd.concat([i[self._drug_column] for i in self._dataframes]).unique()
+        all_target_names = pd.concat([i[self._target_column] for i in self._dataframes]).unique()
+        all_targets = {}
+        for targ in all_target_names:
+            with open(self._data_dir / f"{targ}.fasta") as f:
+                all_targets[targ] = f.read().strip()
 
 
+        if self._device.type == "cuda":
+            self.drug_featurizer.cuda(self._device)
+            self.target_featurizer.cuda(self._device)
 
+        self.drug_featurizer.preload(all_drugs)
+        self.drug_featurizer.cpu()
 
+        self.target_featurizer.preload(list(all_targets.values()))
+        self.target_featurizer.cpu()
+
+        # using the all_targets dictionary, map the target names to the sequences in the dataframes
+        for df in self._dataframes:
+            df[self._target_column] = df[self._target_column].map(all_targets)
+
+        if stage == "fit" or stage is None:
+            self.data_train = BinaryDataset(
+                self.df_train[self._drug_column],
+                self.df_train[self._target_column],
+                self.df_train[self._label_column],
+                self.drug_featurizer,
+                self.target_featurizer,
+            )
+
+            self.data_val = BinaryDataset(
+                self.df_val[self._drug_column],
+                self.df_val[self._target_column],
+                self.df_val[self._label_column],
+                self.drug_featurizer,
+                self.target_featurizer,
+            )
+
+        if stage == "test" or stage is None:
+            self.data_test = BinaryDataset(
+                self.df_test[self._drug_column],
+                self.df_test[self._target_column],
+                self.df_test[self._label_column],
+                self.drug_featurizer,
+                self.target_featurizer,
+            )
