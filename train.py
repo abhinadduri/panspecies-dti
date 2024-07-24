@@ -141,6 +141,8 @@ else:
         datamodule = TDCDataModule(**task_dm_kwargs)
     elif config.task in EnzPredDataModule.dataset_list():
         RuntimeError("EnzPredDataModule not implemented yet")
+    elif config.target_featurizer == 'SaProt':
+        datamodule = DTIStructDataModule(**task_dm_kwargs)
     else:
         datamodule = DTIDataModule(**task_dm_kwargs)
 
