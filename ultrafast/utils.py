@@ -19,3 +19,4 @@ def canonicalize(smiles):
     else:
         return None
 
+
