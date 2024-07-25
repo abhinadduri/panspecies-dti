@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import h5py
+import lmdb
+import pickle
+import pyxis as px
 import torch
 import numpy as np
 import typing as T
@@ -28,6 +31,17 @@ def sanitize_string(s):
     else:
         return str(s).replace("/", "|")
 
+def batched(iterable, batch_size):
+    """A simple batching function using only standard Python."""
+    batch = []
+    for item in iterable:
+        batch.append(item)
+        if len(batch) == batch_size:
+            yield batch
+            batch = []
+    if batch:  # Don't forget the last batch if it's not full
+        yield batch
+
 class Featurizer:
     def __init__(self, name: str, shape: int, save_dir: Path=Path().absolute(), ext: str="h5"):
         self._name = name
@@ -40,6 +54,9 @@ class Featurizer:
         self._on_cuda = False
         self._features = {}
         self._file_dir = None
+
+        # Number of items that have been featurized so far
+        self._num_featurized = 0
 
     def __call__(self, seq: str) -> torch.Tensor:
         if seq not in self.features:
@@ -76,8 +93,9 @@ class Featurizer:
         for k, v in self._features.items():
             self._features[k] = v.to(device)
 
-    @lru_cache(maxsize=5000)
-    def transform(self, seq: str) -> torch.Tensor:
+    # @lru_cache(maxsize=5000)
+    # Removed LRU annotation, simply just make sure that the inputs are all unique elsewhere in the code.
+    def transform(self, seq: str | List[str]) -> torch.Tensor:
         with torch.set_grad_enabled(False):
             feats = self._transform(seq)
             if self._on_cuda:
@@ -138,8 +156,8 @@ class Featurizer:
         else:
             out_path = self._save_path
 
+        print(f"Writing {self.name} features to {out_path}")
         if str(out_path).endswith('.h5'):
-            print(f"Writing {self.name} features to {out_path}")
             with h5py.File(out_path, "a") as h5fi:
                 for seq in tqdm(seq_list, disable=not verbose, desc=self.name):
                     seq_h5 = sanitize_string(seq)
@@ -155,6 +173,19 @@ class Featurizer:
             for seq in tqdm(seq_set, disable=not verbose, desc=self.name):
                 features[seq] = self.transform(seq)
             torch.save(features,out_path)
+        elif str(out_path).endswith('.lmdb'):
+            db = px.Writer(dirpath=str(out_path), map_size_limit=1000, ram_gb_limit=2)
+
+            # # we want to use a batch size here, try 32?
+            # for seq in tqdm(seq_list, disable=not verbose, desc=self.name):
+            #     print(seq, self.transform(seq))
+
+            batch_size = 32  # Adjust this value as needed
+
+            for batch in tqdm(batched(seq_list, batch_size), disable=not verbose, desc=self.name):
+                batch_results = self.transform(batch)
+                for seq, result in zip(batch, batch_results):
+                    print(seq, result)
 
     def preload(
         self,
@@ -347,8 +378,8 @@ class ChemGPTAndFptFeaturizer(Featurizer):
                     print(f"Error processing {seq}: {e}")
 
 class ProtBertFeaturizer(Featurizer):
-    def __init__(self, save_dir: Path = Path().absolute(), per_tok=False):
-        super().__init__("ProtBert", 1024, save_dir)
+    def __init__(self, save_dir: Path = Path().absolute(), per_tok=False, ext: str = "h5"):
+        super().__init__("ProtBert", 1024, save_dir, ext)
 
 
         self._max_len = 1024
@@ -393,21 +424,46 @@ class ProtBertFeaturizer(Featurizer):
     def _space_sequence(self, x):
         return " ".join(list(x))
 
-    def _transform(self, seq: str):
-        if len(seq) > self._max_len - 2:
-            seq = seq[: self._max_len - 2]
+    def _transform(self, seqs: List[str]):
+        print(f"transforming {len(seqs)}...")
+        max_seq_len = self._max_len - 2
+        # Truncate sequences if necessary
+        seqs = [seq[:max_seq_len] for seq in seqs]
 
-        embedding = torch.tensor(self._cuda_registry["featurizer"][0](self._space_sequence(seq)))
-        seq_len = len(seq)
-        start_Idx = 1
-        end_Idx = seq_len + 1
-        feats = embedding.squeeze()[start_Idx:end_Idx]
+        # Apply space_sequence to all sequences in the batch
+        spaced_seqs = [self._space_sequence(seq) for seq in seqs]
+        embeddings = self._cuda_registry["featurizer"][0](spaced_seqs)
+        print(embeddings.shape)
+        embeddings = torch.tensor(embeddings).to(self._cuda_registry["featurizer"][0].device)
 
-        if self.per_tok:
-            return feats
+        # Process each sequence in the batch
+        results = []
+        for i, seq in enumerate(seqs):
+            seq_len = len(seq)
+            start_idx = 1
+            end_idx = seq_len + 1
+            feats = embeddings[i].squeeze()[start_idx:end_idx]
+            
+            results.append(feats)
+        
+        return results
 
-        # return the entire embedding
-        return feats
+
+    # def _transform(self, seq: str):
+    #     if len(seq) > self._max_len - 2:
+    #         seq = seq[: self._max_len - 2]
+
+    #     embedding = torch.tensor(self._cuda_registry["featurizer"][0](self._space_sequence(seq)))
+    #     seq_len = len(seq)
+    #     start_Idx = 1
+    #     end_Idx = seq_len + 1
+    #     feats = embedding.squeeze()[start_Idx:end_Idx]
+
+    #     if self.per_tok:
+    #         return feats
+
+    #     # return the entire embedding
+    #     return feats
 
 class ESM2Featurizer(Featurizer):
     def __init__(self, shape: int = 1280, save_dir: Path = Path().absolute(), ext: str = "h5"):

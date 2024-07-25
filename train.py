@@ -89,8 +89,8 @@ np.random.seed(config.replicate)
 print("Preparing DataModule")
 task_dir = get_task_dir(config.task)
 
-drug_featurizer = get_featurizer(config.drug_featurizer, save_dir=task_dir)
-target_featurizer = get_featurizer(config.target_featurizer, save_dir=task_dir)
+drug_featurizer = get_featurizer(config.drug_featurizer, save_dir=task_dir, ext="h5")
+target_featurizer = get_featurizer(config.target_featurizer, save_dir=task_dir, ext="lmdb")
 
 # Set up task dm arguments
 if config.task == 'dti_dg':

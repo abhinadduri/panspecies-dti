@@ -792,6 +792,8 @@ class MergedDataModule(pl.LightningDataModule):
         self.val_size = val_size
         self.random_state = random_state
 
+    # Even this function needs to change potentially? I don't think you want to load all the data at once
+    # You should prolly chunk it even as you feed it to LMDB files.
     def prepare_data(self):
         if not (self._train_file.exists() and self._val_file.exists() and self._test_file.exists()):
             print("Generating train/val/test splits...")
