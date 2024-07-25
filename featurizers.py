@@ -180,12 +180,15 @@ class Featurizer:
             # for seq in tqdm(seq_list, disable=not verbose, desc=self.name):
             #     print(seq, self.transform(seq))
 
-            batch_size = 32  # Adjust this value as needed
+            total_seqs = len(seq_list)
+            batch_size = 32 # Adjust this value as needed
 
-            for batch in tqdm(batched(seq_list, batch_size), disable=not verbose, desc=self.name):
-                batch_results = self.transform(batch)
-                for seq, result in zip(batch, batch_results):
-                    print(seq, result)
+            with tqdm(total=total_seqs, desc=self.name) as pbar:
+                for batch in batched(seq_list, batch_size):
+                    batch_results = self.transform(batch)
+                    # for seq, result in zip(batch, batch_results):
+                    #     db[seq] = result
+                    pbar.update(batch_size)
 
     def preload(
         self,
@@ -406,7 +409,6 @@ class ProtBertFeaturizer(Featurizer):
         )
 
     def _feat_to_device(self, pipe, device):
-
         if device.type == "cpu":
             d = -1
         else:
@@ -425,18 +427,15 @@ class ProtBertFeaturizer(Featurizer):
         return " ".join(list(x))
 
     def _transform(self, seqs: List[str]):
-        print(f"transforming {len(seqs)}...")
         max_seq_len = self._max_len - 2
         # Truncate sequences if necessary
         seqs = [seq[:max_seq_len] for seq in seqs]
 
         # Apply space_sequence to all sequences in the batch
         spaced_seqs = [self._space_sequence(seq) for seq in seqs]
-        embeddings = self._cuda_registry["featurizer"][0](spaced_seqs)
-        print(embeddings.shape)
-        embeddings = torch.tensor(embeddings).to(self._cuda_registry["featurizer"][0].device)
+        encoded_inputs = self._protbert_tokenizer(spaced_seqs, padding=True, return_tensors="pt")
+        embeddings = self._protbert_model(**encoded_inputs).last_hidden_state.detach().cpu().numpy()
 
-        # Process each sequence in the batch
         results = []
         for i, seq in enumerate(seqs):
             seq_len = len(seq)
@@ -445,7 +444,7 @@ class ProtBertFeaturizer(Featurizer):
             feats = embeddings[i].squeeze()[start_idx:end_idx]
             
             results.append(feats)
-        
+
         return results
 
 
