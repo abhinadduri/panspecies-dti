@@ -1,4 +1,6 @@
 from __future__ import annotations
+import multiprocessing
+from functools import partial
 
 import h5py
 import lmdb
@@ -43,7 +45,7 @@ def batched(iterable, batch_size):
         yield batch
 
 class Featurizer:
-    def __init__(self, name: str, shape: int, save_dir: Path=Path().absolute(), ext: str="h5"):
+    def __init__(self, name: str, shape: int, save_dir: Path=Path().absolute(), ext: str="h5", batch_size: int = 32):
         self._name = name
         self._shape = shape
         self._save_path = save_dir / Path(f"{self._name}_features.{ext}")
@@ -57,6 +59,7 @@ class Featurizer:
 
         # Number of items that have been featurized so far
         self._num_featurized = 0
+        self._batch_size = batch_size
 
     def __call__(self, seq: str) -> torch.Tensor:
         if seq not in self.features:
@@ -93,13 +96,12 @@ class Featurizer:
         for k, v in self._features.items():
             self._features[k] = v.to(device)
 
-    # @lru_cache(maxsize=5000)
     # Removed LRU annotation, simply just make sure that the inputs are all unique elsewhere in the code.
-    def transform(self, seq: str | List[str]) -> torch.Tensor:
+    def transform(self, seqs: List[str]) -> torch.Tensor:
         with torch.set_grad_enabled(False):
-            feats = self._transform(seq)
-            if self._on_cuda:
-                feats = feats.to(self.device)
+            # These should not be on GPU memory. They should be transferred in the dataloader as we read in batches.
+            feats = self._transform(seqs)
+            self._num_featurized += len(feats)
             return feats
 
     @property
@@ -157,38 +159,49 @@ class Featurizer:
             out_path = self._save_path
 
         print(f"Writing {self.name} features to {out_path}")
+        batch_size = self._batch_size
+        total_seqs = len(seq_list)
+
         if str(out_path).endswith('.h5'):
             with h5py.File(out_path, "a") as h5fi:
-                for seq in tqdm(seq_list, disable=not verbose, desc=self.name):
-                    seq_h5 = sanitize_string(seq)
-                    if seq_h5 in h5fi:
-                        # print(f"{seq} already in h5file")
-                        continue
-                    feats = self.transform(seq)
-                    dset = h5fi.require_dataset(seq_h5, feats.shape, np.float32)
-                    dset[:] = feats.cpu().numpy()
+                with tqdm(total=total_seqs, desc=self.name) as pbar:
+                    for batch in batched(seq_list, batch_size):
+                        batch_results = self.transform(batch)
+
+                        for seq, feats in zip(batch, batch_results):
+                            seq_h5 = sanitize_string(seq)
+                            if seq_h5 in h5fi:
+                                continue
+                            dset = h5fi.require_dataset(seq_h5, feats.shape, np.float32)
+                            dset[:] = feats.cpu().numpy()
+                        pbar.update(batch_size)
+
         elif str(out_path).endswith('.pt'):
             features = {}
             seq_set = set(seq_list)
-            for seq in tqdm(seq_set, disable=not verbose, desc=self.name):
-                features[seq] = self.transform(seq)
+            with tqdm(total=total_seqs, desc=self.name) as pbar:
+                for batch in batched(seq_list, batch_size):
+                    batch_results = self.transform(batch)
+
+                    for seq, feats in zip(batch, batch_results):
+                        features[seq] = self.transform(seq)
+                    pbar.update(batch_size)
+
             torch.save(features,out_path)
+
         elif str(out_path).endswith('.lmdb'):
-            db = px.Writer(dirpath=str(out_path), map_size_limit=1000, ram_gb_limit=2)
-
-            # # we want to use a batch size here, try 32?
-            # for seq in tqdm(seq_list, disable=not verbose, desc=self.name):
-            #     print(seq, self.transform(seq))
-
-            total_seqs = len(seq_list)
-            batch_size = 32 # Adjust this value as needed
+            db = px.Writer(dirpath=str(out_path), map_size_limit=10000, ram_gb_limit=10)
 
             with tqdm(total=total_seqs, desc=self.name) as pbar:
                 for batch in batched(seq_list, batch_size):
                     batch_results = self.transform(batch)
-                    # for seq, result in zip(batch, batch_results):
-                    #     db[seq] = result
+
+                    for seq, result in zip(batch, batch_results):
+                        db.put_samples(seq, result)
+
                     pbar.update(batch_size)
+
+            db.close()
 
     def preload(
         self,
@@ -281,10 +294,15 @@ class MorganFeaturizer(Featurizer):
         radius: int = 2,
         save_dir: Path = Path().absolute(),
         ext: str = "h5",
+        batch_size: int = 2048,
+        n_jobs: int = -1,
     ):
-        super().__init__("Morgan", shape, save_dir, ext)
+        super().__init__("Morgan", shape, save_dir, ext, batch_size)
 
         self._radius = radius
+        # number of CPU workers to convert molecules to morgan fingerprints
+        self.n_jobs = n_jobs if n_jobs > 0 else multiprocessing.cpu_count()
+        print(f"Setup morgan featurizer with {self.n_jobs} workers")
 
     def smiles_to_morgan(self, smile: str):
         """
@@ -317,68 +335,28 @@ class MorganFeaturizer(Featurizer):
             features = np.zeros((self.shape,))
         return features
 
-    def _transform(self, smile: str) -> torch.Tensor:
-        # feats = torch.from_numpy(self._featurizer(smile)).squeeze().float()
-        feats = (
-            torch.from_numpy(self.smiles_to_morgan(smile)).squeeze().float()
-        )
-        if feats.shape[0] != self.shape:
-            print("Failed to featurize: appending zero vector")
-            feats = torch.zeros(self.shape)
-        return feats
+    def _transform(self, batch_smiles: List[str]) -> torch.Tensor:
+        with multiprocessing.Pool(processes=self.n_jobs) as pool:
+            smiles_to_morgan_partial = partial(self.smiles_to_morgan)
+            all_feats = pool.map(smiles_to_morgan_partial, batch_smiles)
 
-class ChemGPTAndFptFeaturizer(Featurizer):
-    def __init__(self, chemgpt_shape: int = 256, fp_shape: int = 2048, fp_radius: int = 2, save_dir: Path = Path().absolute(), ext: str = "h5"):
-        total_shape = chemgpt_shape + fp_shape
-        super().__init__("ChemGPTAndFpt", total_shape, save_dir, ext)
-        self.chemgpt_shape = chemgpt_shape
-        self.fp_shape = fp_shape
-        self.fp_radius = fp_radius
-        self.transformer = PretrainedHFTransformer(kind='ChemGPT-19M', notation='selfies', dtype=float)
+            all_feats = [torch.from_numpy(feat).squeeze().float() for feat in all_feats]
+            all_feats = [feat if feat.shape[0] == self.shape else torch.zeros(self.shape) for feat in all_feats]
+            
+            return torch.stack(all_feats, dim=0)
 
-    def _transform(self, smile: str) -> torch.Tensor:
-        try:
-            # ChemGPT features
-            mol = dm.to_mol(smile)
-            if mol is None:
-                raise ValueError(f"Invalid SMILES: {smile}")
-            chemgpt_features = self.transformer([smile])
-            chemgpt_tensor = torch.from_numpy(chemgpt_features[0]).float()
+        # all_feats = []
+        # for smile in batch_smiles:
+        #     feats = (
+        #         torch.from_numpy(self.smiles_to_morgan(smile)).squeeze().float()
+        #     )
+        #     if feats.shape[0] != self.shape:
+        #         print("Failed to featurize: appending zero vector")
+        #         feats = torch.zeros(self.shape)
 
-            # Morgan fingerprint features
-            mol = Chem.MolFromSmiles(smile)
-            fp_vec = AllChem.GetMorganFingerprintAsBitVect(mol, self.fp_radius, nBits=self.fp_shape)
-            fp_array = np.zeros((1,))
-            DataStructs.ConvertToNumpyArray(fp_vec, fp_array)
-            fp_tensor = torch.from_numpy(fp_array).float()
+        #     all_feats.append(feats)
 
-            # Concatenate features
-            return torch.cat([chemgpt_tensor, fp_tensor])
-
-        except Exception as e:
-            print(f"Error featurizing SMILES {smile}: {e}")
-            return torch.zeros(self.shape)
-
-    def write_to_disk(self, seq_list: List[str], verbose: bool = True, file_path: Path = None) -> None:
-        if file_path is not None:
-            out_path = file_path
-        else:
-            out_path = self._save_path
-
-        print(f"Writing {self.name} features to {out_path}")
-        
-        with h5py.File(out_path, "a") as h5fi:
-            for seq in tqdm(seq_list, disable=not verbose, desc=self.name):
-                seq_h5 = sanitize_string(seq)
-                if seq_h5 in h5fi:
-                    print(f"{seq} already in h5file")
-                    continue
-                try:
-                    feats = self.transform(seq)
-                    dset = h5fi.require_dataset(seq_h5, feats.shape, np.float32)
-                    dset[:] = feats.cpu().numpy()
-                except Exception as e:
-                    print(f"Error processing {seq}: {e}")
+        # return torch.stack(all_feats, dim=0)
 
 class ProtBertFeaturizer(Featurizer):
     def __init__(self, save_dir: Path = Path().absolute(), per_tok=False, ext: str = "h5"):
@@ -427,14 +405,19 @@ class ProtBertFeaturizer(Featurizer):
         return " ".join(list(x))
 
     def _transform(self, seqs: List[str]):
+        device = torch.device("cuda:0") if torch.cuda.is_available() else torch.device("cpu")
         max_seq_len = self._max_len - 2
         # Truncate sequences if necessary
         seqs = [seq[:max_seq_len] for seq in seqs]
 
         # Apply space_sequence to all sequences in the batch
         spaced_seqs = [self._space_sequence(seq) for seq in seqs]
-        encoded_inputs = self._protbert_tokenizer(spaced_seqs, padding=True, return_tensors="pt")
-        embeddings = self._protbert_model(**encoded_inputs).last_hidden_state.detach().cpu().numpy()
+        ids = self._protbert_tokenizer(spaced_seqs, padding=True, return_tensors="pt")
+        input_ids = torch.tensor(ids['input_ids']).to(device)
+        attention_mask = torch.tensor(ids['attention_mask']).to(device)
+
+        embeddings = self._protbert_model(input_ids=input_ids, attention_mask=attention_mask)
+        embeddings = embeddings.last_hidden_state.detach().cpu()
 
         results = []
         for i, seq in enumerate(seqs):
@@ -446,23 +429,6 @@ class ProtBertFeaturizer(Featurizer):
             results.append(feats)
 
         return results
-
-
-    # def _transform(self, seq: str):
-    #     if len(seq) > self._max_len - 2:
-    #         seq = seq[: self._max_len - 2]
-
-    #     embedding = torch.tensor(self._cuda_registry["featurizer"][0](self._space_sequence(seq)))
-    #     seq_len = len(seq)
-    #     start_Idx = 1
-    #     end_Idx = seq_len + 1
-    #     feats = embedding.squeeze()[start_Idx:end_Idx]
-
-    #     if self.per_tok:
-    #         return feats
-
-    #     # return the entire embedding
-    #     return feats
 
 class ESM2Featurizer(Featurizer):
     def __init__(self, shape: int = 1280, save_dir: Path = Path().absolute(), ext: str = "h5"):
