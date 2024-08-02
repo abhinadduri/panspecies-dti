@@ -51,7 +51,7 @@ class Featurizer:
         self._save_path = save_dir / Path(f"{self._name}_features.{ext}")
 
         self._preloaded = False
-        self._device = torch.device("cpu")
+        self._device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
         self._cuda_registry = {}
         self._on_cuda = False
         self._features = {}
@@ -250,12 +250,11 @@ class Featurizer:
         self._update_device(self.device)
 
 class ChemGPTFeaturizer(Featurizer):
-    def __init__(self, shape: int = 768, save_dir: Path = Path().absolute(), ext: str = "h5"):
-        super().__init__("RoBertaZinc", shape, save_dir, ext)
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        self.transformer = PretrainedHFTransformer(kind='Roberta-Zinc480M-102M', notation='selfies', dtype=float, device=device)
+    def __init__(self, shape: int = 768, save_dir: Path = Path().absolute(), ext: str = "h5", batch_size: int = 32):
+        super().__init__("RoBertaZinc", shape, save_dir, ext, batch_size)
+        self.transformer = PretrainedHFTransformer(kind='Roberta-Zinc480M-102M', notation='selfies', dtype=float, device=self._device)
 
-    def _transform(self, smile: str) -> torch.Tensor:
+    def _transform_single(self, smile: str) -> torch.Tensor:
         try:
             mol = dm.to_mol(smile)
             if mol is None:
@@ -266,26 +265,33 @@ class ChemGPTFeaturizer(Featurizer):
             print(f"Error featurizing SMILES {smile}: {e}")
             return torch.zeros(self.shape)
 
-    def write_to_disk(self, seq_list: List[str], verbose: bool = True, file_path: Path = None) -> None:
-        if file_path is not None:
-            out_path = file_path
-        else:
-            out_path = self._save_path
-
-        print(f"Writing {self.name} features to {out_path}")
-        
-        with h5py.File(out_path, "a") as h5fi:
-            for seq in tqdm(seq_list, disable=not verbose, desc=self.name):
-                seq_h5 = sanitize_string(seq)
-                if seq_h5 in h5fi:
-                    logger.info(f"{seq} already in h5file")
-                    continue
-                try:
-                    feats = self.transform(seq)
-                    dset = h5fi.require_dataset(seq_h5, feats.shape, np.float32)
-                    dset[:] = feats.cpu().numpy()
-                except Exception as e:
-                    logger.error(f"Error processing {seq}: {e}")
+    def _transform(self, batch_smiles: List[str]) -> torch.Tensor:
+        try:
+            mols = [dm.to_mol(smile) for smile in batch_smiles]
+            invalid_indices = [i for i, mol in enumerate(mols) if mol is None]
+            
+            if invalid_indices:
+                print(f"Invalid SMILES at indices: {invalid_indices}")
+                for idx in invalid_indices:
+                    mols[idx] = dm.to_mol("")  # Empty molecule as placeholder
+            
+            features = self.transformer(batch_smiles)
+            features = torch.from_numpy(features).float()
+            
+            # Replace features for invalid SMILES with zero vectors
+            for idx in invalid_indices:
+                features[idx] = torch.zeros(self.shape)
+            
+            return features
+        except RuntimeError as e:
+            if "CUDA out of memory" in str(e):
+                print("CUDA out of memory during batch processing. Falling back to sequential processing.")
+                return torch.stack([self._transform_single(smile) for smile in batch_smiles])
+            else:
+                raise e
+        except Exception as e:
+            print(f"Error during batch featurization: {e}")
+            return torch.stack([self._transform_single(smile) for smile in batch_smiles])
 
 class MorganFeaturizer(Featurizer):
     def __init__(
@@ -345,23 +351,11 @@ class MorganFeaturizer(Featurizer):
             
             return torch.stack(all_feats, dim=0)
 
-        # all_feats = []
-        # for smile in batch_smiles:
-        #     feats = (
-        #         torch.from_numpy(self.smiles_to_morgan(smile)).squeeze().float()
-        #     )
-        #     if feats.shape[0] != self.shape:
-        #         print("Failed to featurize: appending zero vector")
-        #         feats = torch.zeros(self.shape)
-
-        #     all_feats.append(feats)
-
-        # return torch.stack(all_feats, dim=0)
-
 class ProtBertFeaturizer(Featurizer):
     def __init__(self, save_dir: Path = Path().absolute(), per_tok=False, ext: str = "h5"):
         super().__init__("ProtBert", 1024, save_dir, ext)
 
+        print(f"Using ESM2 featurizer with {self._batch_size} batches")
 
         self._max_len = 1024
         self.per_tok = per_tok
@@ -405,7 +399,6 @@ class ProtBertFeaturizer(Featurizer):
         return " ".join(list(x))
 
     def _transform(self, seqs: List[str]):
-        device = torch.device("cuda:0") if torch.cuda.is_available() else torch.device("cpu")
         max_seq_len = self._max_len - 2
         # Truncate sequences if necessary
         seqs = [seq[:max_seq_len] for seq in seqs]
@@ -413,8 +406,8 @@ class ProtBertFeaturizer(Featurizer):
         # Apply space_sequence to all sequences in the batch
         spaced_seqs = [self._space_sequence(seq) for seq in seqs]
         ids = self._protbert_tokenizer(spaced_seqs, padding=True, return_tensors="pt")
-        input_ids = torch.tensor(ids['input_ids']).to(device)
-        attention_mask = torch.tensor(ids['attention_mask']).to(device)
+        input_ids = torch.tensor(ids['input_ids']).to(self._device)
+        attention_mask = torch.tensor(ids['attention_mask']).to(self._device)
 
         embeddings = self._protbert_model(input_ids=input_ids, attention_mask=attention_mask)
         embeddings = embeddings.last_hidden_state.detach().cpu()
@@ -431,56 +424,59 @@ class ProtBertFeaturizer(Featurizer):
         return results
 
 class ESM2Featurizer(Featurizer):
-    def __init__(self, shape: int = 1280, save_dir: Path = Path().absolute(), ext: str = "h5"):
-        super().__init__("ESM2", shape, save_dir, ext)
+    def __init__(self, shape: int = 1280, save_dir: Path = Path().absolute(), ext: str = "h5", batch_size: int = 16):
+        super().__init__("ESM2", shape, save_dir, ext, batch_size)
+
+        print(f"Using ESM2 featurizer with {self._batch_size} batches")
         
         # Load ESM-2 model
         self.model, self.alphabet = esm.pretrained.esm2_t33_650M_UR50D()
         self.batch_converter = self.alphabet.get_batch_converter()
         
         # Move model to GPU if available
-        self.device_ = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        self.model = self.model.to(self.device_)
+        self.model = self.model.to(self._device)
         self.model.eval()  # Set the model to evaluation mode
 
-    def _transform(self, seq: str) -> torch.Tensor:
+    def _transform_single(self, seq: str) -> torch.Tensor:
         try:
             data = [("protein", seq)]
-            batch_labels, batch_strs, batch_tokens = self.batch_converter(data)
-            batch_tokens = batch_tokens.to(self.device)
+            _, _, batch_tokens = self.batch_converter(data)
+            batch_tokens = batch_tokens.to(self._device)
 
             with torch.no_grad():
                 results = self.model(batch_tokens, repr_layers=[33], return_contacts=False)
-            token_embeddings = results["representations"][33]
+            token_embeddings = results["representations"][33].detach().cpu()
 
-            # Return the full sequence of embeddings instead of just the CLS token
-            return token_embeddings[0, 1:].squeeze(0)  # This will be a 2D tensor (sequence length, feature dimension)
-
+            return token_embeddings[0, 1:].squeeze(0)  # Return the full sequence embedding
         except Exception as e:
-            print(f"Error featurizing sequence: {e}")
-            return torch.zeros((1, self.shape), device=self.device)
-        
-    def write_to_disk(self, seq_list: List[str], verbose: bool = True, file_path: Path = None) -> None:
-        if file_path is not None:
-            out_path = file_path
-        else:
-            out_path = self._save_path
+            print(f"Error featurizing single sequence: {e}")
+            return torch.zeros((len(seq), self.shape)) # zero vector for each token
 
-        print(f"Writing {self.name} features to {out_path}")
-        
-        with h5py.File(out_path, "a") as h5fi:
-            for seq in tqdm(seq_list, disable=not verbose, desc=self.name):
-                seq_h5 = self.sanitize_string(seq)
-                if seq_h5 in h5fi:
-                    print(f"{seq} already in h5file")
-                    continue
-                try:
-                    feats = self.transform(seq)
-                    dset = h5fi.require_dataset(seq_h5, feats.shape, np.float32)
-                    dset[:] = feats.cpu().numpy()
-                except Exception as e:
-                    print(f"Error processing {seq}: {e}")
+    def _transform(self, seqs: List[str]) -> List[torch.Tensor]:
+        results = []
+        try:
+            data = [("protein", seq) for seq in seqs]
+            _, _, batch_tokens = self.batch_converter(data)
+            batch_tokens = batch_tokens.to(self._device)
 
+            with torch.no_grad():
+                results = self.model(batch_tokens, repr_layers=[33], return_contacts=False)
+            token_embeddings = results["representations"][33].detach().cpu()
+
+            results = [token_embeddings[j, 1:].squeeze(0) for j in range(len(seqs))]
+        except RuntimeError as e:
+            if "CUDA out of memory" in str(e):
+                print("CUDA out of memory during batch processing. Falling back to sequential processing.")
+                results = [self._transform_single(seq) for seq in seqs]
+            else:
+                raise e
+        except Exception as e:
+            print(f"Error during batch featurization: {e}")
+            results = [self._transform_single(seq) for seq in seqs]
+        
+        torch.cuda.empty_cache()  # Clear GPU cache after processing
+        return results
+      
     @staticmethod
     def sanitize_string(s):
         return ''.join(c if c.isalnum() else '_' for c in s)
