@@ -115,7 +115,7 @@ def make_diffprot_contrastive(
     contrastive = []
 
     for _, r in pos_df.iterrows():
-        neg_df = df[r[anchor_column] != df[anchor_column]] # get all rows where the anchor is not the same
+        neg_df = pos_df[r[anchor_column] != pos_df[anchor_column]] # get all rows where the anchor is not the same
         for _ in range(n_neg_per):
             contrastive.append((r[anchor_column], r[posneg_column], choice(neg_df[posneg_column])))
     contrastive = pd.DataFrame(
