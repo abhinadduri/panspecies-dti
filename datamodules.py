@@ -102,6 +102,28 @@ def make_contrastive(
     )
     return contrastive
 
+def make_diffprot_contrastive(
+        df: pd.DataFrame,
+        posneg_column: str,
+        anchor_column: str,
+        label_column: str,
+        n_neg_per: int = 50,
+    ):
+
+    pos_df = df[df[label_column] == 1]
+
+    contrastive = []
+
+    for _, r in pos_df.iterrows():
+        neg_df = pos_df[r[anchor_column] != pos_df[anchor_column]] # get all rows where the anchor is not the same
+        for _ in range(n_neg_per):
+            contrastive.append((r[anchor_column], r[posneg_column], choice(neg_df[posneg_column])))
+    contrastive = pd.DataFrame(
+        contrastive, columns=["Anchor", "Positive", "Negative"]
+    )
+
+    return contrastive
+
 class BinaryDataset(Dataset):
     def __init__(
         self,
@@ -607,6 +629,7 @@ class DUDEDataModule(pl.LightningDataModule):
             contrastive_split: str,
             drug_featurizer: Featurizer,
             target_featurizer: Featurizer,
+            contrastive_type: str = "default",
             device: torch.device = torch.device("cpu"),
             n_neg_per: int = 50,
             batch_size: int = 32,
@@ -647,6 +670,9 @@ class DUDEDataModule(pl.LightningDataModule):
         self.drug_featurizer = drug_featurizer
         self.target_featurizer = target_featurizer
 
+        assert contrastive_type in ["default", "diffprot"], "Contrastive type must be one of ['default', 'diffprot']"
+        self.contrastive_type = contrastive_type
+
     def prepare_data(self):
         pass
 
@@ -661,13 +687,22 @@ class DUDEDataModule(pl.LightningDataModule):
         self.df_train = self.df_full[self.df_full[self._target_id_column].isin(self._train_list)]
         self.df_test = self.df_full[self.df_full[self._target_id_column].isin(self._test_list)]
 
-        self.train_contrastive = make_contrastive(
+        if self.contrastive_type == "diffprot":
+            self.train_contrastive = make_diffprot_contrastive(
                 self.df_train,
                 self._drug_column,
                 self._target_column,
                 self._label_column,
                 self._n_neg_per,
             )
+        elif self.contrastive_type == "default":
+            self.train_contrastive = make_contrastive(
+                    self.df_train,
+                    self._drug_column,
+                    self._target_column,
+                    self._label_column,
+                    self._n_neg_per,
+                )
 
         self._dataframes = [self.df_train]  # , self.df_test]
 

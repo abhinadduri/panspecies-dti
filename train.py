@@ -127,6 +127,7 @@ if config.contrastive:
             "batch_size": config.contrastive_batch_size,
             "shuffle": config.shuffle,
             "num_workers": config.num_workers,
+            "contrastive_type": config.contrastive_type,
             }
 
     datamodule = CombinedDataModule(
