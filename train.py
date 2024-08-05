@@ -16,6 +16,7 @@ import argparse
 from datamodules import (
         get_task_dir,
         DTIDataModule,
+        DTIStructDataModule,
         TDCDataModule,
         DUDEDataModule,
         EnzPredDataModule,
@@ -141,7 +142,7 @@ else:
         datamodule = TDCDataModule(**task_dm_kwargs)
     elif config.task in EnzPredDataModule.dataset_list():
         RuntimeError("EnzPredDataModule not implemented yet")
-    elif config.target_featurizer == 'SaProt':
+    elif config.target_featurizer == 'SaProtFeaturizer':
         datamodule = DTIStructDataModule(**task_dm_kwargs)
     else:
         datamodule = DTIDataModule(**task_dm_kwargs)
