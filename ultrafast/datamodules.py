@@ -26,6 +26,7 @@ def get_task_dir(task_name: str):
         "biosnap": "./data/BIOSNAP/full_data",
         "biosnap_prot": "./data/BIOSNAP/unseen_protein",
         "biosnap_mol": "./data/BIOSNAP/unseen_drug",
+        "test_data": "./data/test_data",
         "bindingdb": "./data/BindingDB",
         "davis": "./data/DAVIS",
         "dti_dg": "./data/TDC",
@@ -288,11 +289,12 @@ class DTIDataModule(pl.LightningDataModule):
             print("Drug and target featurizers already exist")
             return
 
-        df_train = pd.read_csv(self._data_dir / self._train_path, **self._csv_kwargs)
+        print(self._train_path)
+        df_train = pd.read_csv(self._data_dir / self._train_path, **self._csv_kwargs, dtype={self._target_column: str})
 
-        df_val = pd.read_csv(self._data_dir / self._val_path, **self._csv_kwargs)
+        df_val = pd.read_csv(self._data_dir / self._val_path, **self._csv_kwargs, dtype={self._target_column: str})
 
-        df_test = pd.read_csv(self._data_dir / self._test_path, **self._csv_kwargs)
+        df_test = pd.read_csv(self._data_dir / self._test_path, **self._csv_kwargs, dtype={self._target_column: str})
 
         dataframes = [df_train, df_val, df_test]
         all_drugs = pd.concat([i[self._drug_column] for i in dataframes]).unique()
@@ -312,9 +314,9 @@ class DTIDataModule(pl.LightningDataModule):
         self.target_featurizer.cpu()
 
     def setup(self, stage = None):
-        self.df_train = pd.read_csv(self._data_dir / self._train_path, **self._csv_kwargs)
-        self.df_val = pd.read_csv(self._data_dir / self._val_path, **self._csv_kwargs)
-        self.df_test = pd.read_csv(self._data_dir / self._test_path, **self._csv_kwargs)
+        self.df_train = pd.read_csv(self._data_dir / self._train_path, **self._csv_kwargs, dtype={self._target_column: str})
+        self.df_val = pd.read_csv(self._data_dir / self._val_path, **self._csv_kwargs, dtype={self._target_column: str})
+        self.df_test = pd.read_csv(self._data_dir / self._test_path, **self._csv_kwargs, dtype={self._target_column: str})
 
         self._dataframes = [self.df_train, self.df_val, self.df_test]
 
@@ -720,6 +722,7 @@ class DUDEDataModule(pl.LightningDataModule):
             target_featurizer: Featurizer,
             contrastive_type: str = "default",
             device: torch.device = torch.device("cpu"),
+            contrastive_type: str = "default",
             n_neg_per: int = 50,
             batch_size: int = 32,
             shuffle: bool = True,
@@ -778,12 +781,13 @@ class DUDEDataModule(pl.LightningDataModule):
 
         if self.contrastive_type == "diffprot":
             self.train_contrastive = make_diffprot_contrastive(
-                self.df_train,
-                self._drug_column,
-                self._target_column,
-                self._label_column,
-                self._n_neg_per,
-            )
+                    self.df_train,
+                    self._drug_column,
+                    self._target_column,
+                    self._label_column,
+                    self._n_neg_per,
+                )
+
         elif self.contrastive_type == "default":
             self.train_contrastive = make_contrastive(
                     self.df_train,
