@@ -45,6 +45,7 @@ def get_task_dir(task_name: str):
         "phosphatase": "./data/EnzPred/phosphatase_chiral_binary",
         "leash": "./data/leash/",
         "merged": "./data/MERGED/huge_data",
+        "binding_site": "./data/binding_site/",
     }
 
     return Path(task_paths[task_name.lower()]).resolve()
@@ -183,6 +184,38 @@ class BinaryDataset(Dataset):
         label = torch.tensor(self.labels.iloc[i], dtype=torch.float32)
 
         return drug, target, label
+
+class BindingSiteDataset(Dataset):
+    def __init__(
+        self,
+        drugs,
+        targets,
+        labels,
+        binding_sites,
+        drug_featurizer: Featurizer,
+        target_featurizer: Featurizer,
+    ):
+        self.drugs = drugs
+        self.targets = targets
+        self.labels = labels
+        self.binding_sites = binding_sites
+
+        self.drug_featurizer = drug_featurizer
+        self.target_featurizer = target_featurizer
+
+    def __len__(self):
+        return len(self.drugs)
+
+    def __getitem__(self, i: int):
+        drug = self.drug_featurizer(self.drugs.iloc[i])
+        target = self.target_featurizer(self.targets.iloc[i])
+        label = torch.tensor(self.labels.iloc[i], dtype=torch.float32)
+        # create a zero tensor with the same length as target
+        # then set the location of each binding site residue to 1, all others are 0
+        binding_site = torch.zeros_like(target)
+        binding_site[self.binding_sites.iloc[i]] = 1
+
+        return drug, target, label, binding_site
 
 class ContrastiveDataset(Dataset):
     def __init__(
@@ -446,6 +479,95 @@ class DTIStructDataModule(DTIDataModule):
         self._train_path = Path("train_foldseek.csv")
         self._val_path = Path("val_foldseek.csv")
         self._test_path = Path("test_foldseek.csv")
+
+class BindSiteDataModule(DTIDataModule):
+    """ DataModule used for training on DTI data as well as annotated binding sites.
+    Uses the following data sets:
+    - binding_site
+    """
+    def __init__(
+            self,
+            data_dir: str,
+            drug_featurizer: Featurizer,
+            target_featurizer: Featurizer,
+            device: torch.device = torch.device("cpu"),
+            batch_size: int = 32,
+            shuffle: bool = True,
+            num_workers: int = 0,
+            header=0,
+            index_col=0,
+            sep=",",
+        ):
+        super().__init__(
+            data_dir,
+            drug_featurizer,
+            target_featurizer,
+            device,
+            batch_size,
+            shuffle,
+            num_workers,
+            header,
+            index_col,
+            sep,
+        )
+        self._bindingsite_column = "Binding Idx"
+        self._data_dir = Path(data_dir)
+        self._train_path = Path("train.csv")
+        self._val_path = Path("val.csv")
+        self._test_path = Path("test.csv")
+
+    def binding_str_to_list(self, binding_str):
+        return list(map(int, binding_str.split(" ")))
+
+    def setup(self, stage = None):
+        self.df_train = pd.read_csv(self._data_dir / self._train_path, **self._csv_kwargs, dtype={self._target_column: str})
+        self.df_train[self._bindingsite_column] = self.df_train[self._bindingsite_column].apply(self.binding_str_to_list)
+        self.df_val = pd.read_csv(self._data_dir / self._val_path, **self._csv_kwargs, dtype={self._target_column: str})
+        self.df_val[self._bindingsite_column] = self.df_val[self._bindingsite_column].apply(self.binding_str_to_list)
+        self.df_test = pd.read_csv(self._data_dir / self._test_path, **self._csv_kwargs, dtype={self._target_column: str})
+
+        self._dataframes = [self.df_train, self.df_val, self.df_test]
+
+        all_drugs = pd.concat([i[self._drug_column] for i in self._dataframes]).unique()
+        all_targets = pd.concat([i[self._target_column] for i in self._dataframes]).unique()
+
+        if self._device.type == "cuda":
+            self.drug_featurizer.cuda(self._device)
+            self.target_featurizer.cuda(self._device)
+
+        self.drug_featurizer.preload(all_drugs)
+        self.drug_featurizer.cpu()
+
+        self.target_featurizer.preload(all_targets)
+        self.target_featurizer.cpu()
+
+        if stage == "fit" or stage is None:
+            self.data_train = BindingSiteDataset(
+                self.df_train[self._drug_column],
+                self.df_train[self._target_column],
+                self.df_train[self._label_column],
+                self.df_train[self._bindingsite_column],
+                self.drug_featurizer,
+                self.target_featurizer,
+            )
+
+            self.data_val = BindingSiteDataset(
+                self.df_val[self._drug_column],
+                self.df_val[self._target_column],
+                self.df_val[self._label_column],
+                self.drug_featurizer,
+                self.target_featurizer,
+            )
+
+        if stage == "test" or stage is None:
+            self.data_test = BindingSiteDataset(
+                self.df_test[self._drug_column],
+                self.df_test[self._target_column],
+                self.df_test[self._label_column],
+                self.drug_featurizer,
+                self.target_featurizer,
+            )
+
 
 class TDCDataModule(pl.LightningDataModule):
     """ DataModule used for training on drug-target interaction data.
