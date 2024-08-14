@@ -21,7 +21,7 @@ from rdkit.Chem.rdmolops import RDKFingerprint
 from utils import canonicalize
 
 def sanitize_string(s):
-    return s.replace("/", "|")
+    return str(s).replace("/", "|")
 
 class Featurizer:
     def __init__(self, name: str, shape: int, save_dir: Path=Path().absolute(), ext: str="h5"):
@@ -498,7 +498,11 @@ class SaProtFeaturizer(Featurizer):
         
         with h5py.File(out_path, "a") as h5fi:
             for seq in tqdm(seq_list, disable=not verbose, desc=self.name):
-                seq_h5 = self.sanitize_string(seq)
+                try:
+                    seq_h5 = self.sanitize_string(seq)
+                except Exception as e:
+                    print(f"Error processing {seq}: e")
+                    continue
                 if seq_h5 in h5fi:
                     print(f"{seq} already in h5file")
                     continue

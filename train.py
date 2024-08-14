@@ -26,11 +26,13 @@ from model import DrugTargetCoembeddingLightning
 from trainloop import ConPlexEpochLoop
 from utils import get_featurizer, xavier_normal
 
+# no defaults, as they will override anything in the config file
 parser = argparse.ArgumentParser(description="PLM_DTI Training.")
 parser.add_argument("--exp-id", required=True, help="Experiment ID", dest="experiment_id")
 parser.add_argument("--config", help="YAML config file", default="default_config.yaml")
 parser.add_argument("--wandb-proj", help="Weights and Biases Project",dest="wandb_proj")
 parser.add_argument("--task", choices=[
+    "test_data",
     "biosnap",
     "bindingdb",
     "davis",
@@ -49,9 +51,11 @@ parser.add_argument("--r", "--replicate", type=int, help="Replicate", dest="repl
 parser.add_argument("--d", "--device", default=0, type=int, help="CUDA device", dest="device")
 parser.add_argument("--verbosity", type=int, help="Level at which to log", dest="verbosity")
 parser.add_argument("--checkpoint", default=None, help="Model weights to start from")
-parser.add_argument('--prot-proj', default="avg", choices=["avg","agg","transformer", "genagg"], help="Change the protein projector method")
+parser.add_argument('--prot-proj', choices=["avg","agg","transformer", "genagg"], help="Change the protein projector method")
+parser.add_argument('--loss-type', choices=["CE","focal"], help="Loss to use for binary classification")
 parser.add_argument('--out-type', default="cls", choices=['cls','mean'], help="use cls token or mean of everything else")
 
+parser.add_argument("--num-heads-agg", type=int, help="Number of heads in learned agg transformer", dest="num_heads_agg")
 parser.add_argument("--num-layers-target", type=int, help="Number of layers in target transformer", dest="num_layers_target")
 parser.add_argument("--drug-layers", type=int, default=2, choices=[1, 2], help="Number of layers in drug transformer", dest="drug_layers")
 parser.add_argument("--dropout", type=float, help="Dropout rate for transformer", dest="dropout")
@@ -136,7 +140,7 @@ if config.contrastive:
             task_kwargs=task_dm_kwargs,
             contrastive_kwargs=contrastive_dm_kwargs,
             )
-    config.epochs *= 2
+    config.epochs *= 2 # 1 epoch DTI, next epoch Contrastive 
 else:
     if config.task == 'dti_dg':
         datamodule = TDCDataModule(**task_dm_kwargs)
@@ -180,7 +184,7 @@ else:
     )
 
 if not config.no_wandb:
-    wandb_logger = WandbLogger(project=config.wandb_proj, entity="abhinadduri",log_model="gradients")
+    wandb_logger = WandbLogger(project=config.wandb_proj, entity="andmcnutt",log_model="gradients")
     wandb_logger.watch(model)
     wandb_logger.experiment.config.update(OmegaConf.to_container(config, resolve=True, throw_on_missing=True))
 
@@ -199,7 +203,8 @@ trainer.fit(
         datamodule=datamodule,
         )
 
-wandb.save(f'{config.task}.ckpt')
+if not config.no_wandb:
+    wandb.save(f'{config.task}.ckpt')
 
 # Test model using best weights
 trainer.test(datamodule=datamodule, ckpt_path=checkpoint_callback.best_model_path)

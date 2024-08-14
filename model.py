@@ -7,6 +7,38 @@ from contrastive_loss import MarginScheduledLossFunction
 import pytorch_lightning as pl
 import torchmetrics
 
+class FocalLoss(nn.Module):
+    ### https://github.com/facebookresearch/fvcore/blob/main/fvcore/nn/focal_loss.py
+    def __init__(self,
+                 reduction="mean",
+                 alpha=-1,
+                 gamma=2):
+        super().__init__()
+        self.reduction = reduction
+        self.alpha = alpha
+        self.gamma = gamma
+
+    def forward(self, inputs, targets):
+        inputs = inputs.float()
+        targets = targets.float()
+        p = torch.sigmoid(inputs)
+        ce_loss = F.binary_cross_entropy_with_logits(inputs, targets, reduction="none")
+        p_t = p * targets + (1 - p) * (1 - targets)
+        loss = ce_loss * ((1 - p_t) ** self.gamma)
+
+        if self.alpha >= 0:
+            alpha_t = self.alpha * targets + (1 - self.alpha) * (1 - targets)
+            loss = alpha_t * loss
+
+        if self.reduction == "none":
+            pass
+        elif self.reduction == "mean":
+            loss = loss.mean()
+        elif self.reduction == "sum":
+            loss = loss.sum()
+
+        return loss
+
 class FeedForward(nn.Module):
     def __init__(self, dim, hidden_dim, dropout = 0.):
         super().__init__()
@@ -204,7 +236,7 @@ class DrugTargetCoembeddingLightning(pl.LightningModule):
         if args.prot_proj == "transformer":
             protein_projector = TargetEmbedding( self.target_dim, self.latent_dim, num_layers_target, dropout=dropout, out_type=args.out_type)
         elif args.prot_proj == "agg":
-            protein_projector = nn.Sequential(Learned_Aggregation_Layer(self.target_dim, attn_drop=dropout, proj_drop=dropout), nn.Linear(self.target_dim, self.latent_dim))
+            protein_projector = nn.Sequential(Learned_Aggregation_Layer(self.target_dim, num_heads=self.args.num_heads_agg, attn_drop=dropout, proj_drop=dropout), nn.Linear(self.target_dim, self.latent_dim))
 
         self.target_projector = nn.Sequential(
                 protein_projector,
@@ -226,9 +258,11 @@ class DrugTargetCoembeddingLightning(pl.LightningModule):
                 "f1": self.val_f1,
             }
             self.loss_fct = torch.nn.BCELoss()
+            if self.args.loss_type == "focal":
+                self.loss_fct = FocalLoss()
         else:
-            self.val_mse = torchmetrics.MeanSquaredError().cuda()
-            self.val_pcc = torchmetrics.PearsonCorrCoef().cuda()
+            self.val_mse = torchmetrics.MeanSquaredError()
+            self.val_pcc = torchmetrics.PearsonCorrCoef()
             self.metrics = {"mse": self.val_mse, "pcc": self.val_pcc}
             self.loss_fct = torch.nn.MSELoss()
 
@@ -341,7 +375,7 @@ class DrugTargetCoembeddingLightning(pl.LightningModule):
             sch.step()
 
     def validation_step(self, batch, batch_idx):
-        if self.global_step == 0:
+        if self.global_step == 0 and not self.args.no_wandb:
             wandb.define_metric("val/aupr", summary="max")
         drug, protein, label = batch
         similarity = self.forward(drug, protein)
@@ -362,7 +396,7 @@ class DrugTargetCoembeddingLightning(pl.LightningModule):
             if self.classify:
                 metric(torch.Tensor(self.val_step_outputs), torch.Tensor(self.val_step_targets).to(torch.int))
             else:
-                metric(torch.Tensor(self.val_step_outputs).cuda(), torch.Tensor(self.val_step_targets).to(torch.float).cuda())
+                metric(torch.Tensor(self.val_step_outputs), torch.Tensor(self.val_step_targets).to(torch.float))
             self.log(f"val/{name}", metric, on_step=False, on_epoch=True)
 
         self.val_step_outputs.clear()
@@ -385,7 +419,7 @@ class DrugTargetCoembeddingLightning(pl.LightningModule):
             if self.classify:
                 metric(torch.Tensor(self.test_step_outputs), torch.Tensor(self.test_step_targets).to(torch.int))
             else:
-                metric(torch.Tensor(self.test_step_outputs).cuda(), torch.Tensor(self.test_step_targets).to(torch.float).cuda())
+                metric(torch.Tensor(self.test_step_outputs), torch.Tensor(self.test_step_targets).to(torch.float))
             self.log(f"test/{name}", metric, on_step=False, on_epoch=True)
 
         self.test_step_outputs.clear()
