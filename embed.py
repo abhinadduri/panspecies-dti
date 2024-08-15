@@ -1,8 +1,3 @@
-# Script to generate embeddings from the DrugTargetCoembeddingLightning model
-# Input will be a list of drug smiles and target sequences
-# Output will be the embeddings of the drugs and targets
-#
-
 import os
 import argparse
 import torch
@@ -13,7 +8,6 @@ from torch.utils.data import DataLoader
 from datamodules import EmbedDataset
 from model import DrugTargetCoembeddingLightning
 from utils import get_featurizer
-from drug_target_embed.config import Config
 
 def get_args():
     parser = argparse.ArgumentParser(description='Generate embeddings from DrugTargetCoembeddingLightning model')
@@ -24,7 +18,7 @@ def get_args():
     parser.add_argument("--target-featurizer", help="Target featurizer", dest="target_featurizer", default="ESM2Featurizer")
 
     parser.add_argument('--checkpoint', type=str, help='Path to model checkpoint')
-    parser.add_argument('--output_path', type=str, help='path to save embeddings')
+    parser.add_argument('--output_path', type=str, help='path to save embeddings. Currently only supports numpy format.')
     parser.add_argument('--batch_size', type=int, default=128, help='Batch size for inference')
     parser.add_argument('--device', type=str, default=0, help='CUDA device. If CUDA is not available, this will be ignored.')
     return parser.parse_args()
@@ -53,13 +47,8 @@ if __name__ == '__main__':
             embeddings.append(emb.cpu().numpy())
     embeddings = np.concatenate(embeddings, axis=0)
 
-    # make sure directories for output_path exist
     os.makedirs(os.path.dirname(args.output_path), exist_ok=True)
 
     np.save(args.output_path, embeddings)
-
-
-    
-
 
 
