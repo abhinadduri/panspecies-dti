@@ -36,10 +36,7 @@ def get_task_dir(task_name: str):
         "esterase": "./data/EnzPred/esterase_binary",
         "kinase": "./data/EnzPred/davis_filtered",
         "phosphatase": "./data/EnzPred/phosphatase_chiral_binary",
-<<<<<<< Updated upstream
-=======
         "binding_site": "./data/binding_site/",
->>>>>>> Stashed changes
     }
 
     return Path(task_paths[task_name.lower()]).resolve()
@@ -352,47 +349,6 @@ class DTIDataModule(pl.LightningDataModule):
     def test_dataloader(self):
         return DataLoader(self.data_test, **self._loader_kwargs)
 
-<<<<<<< Updated upstream
-=======
-class DTIStructDataModule(DTIDataModule):
-    """ DataModule used for training on drug-target interaction data.
-    Uses the following data sets:
-    - biosnap
-    - biosnap_prot
-    - biosnap_mol
-    - bindingdb
-    - davis
-    """
-    def __init__(
-            self,
-            data_dir: str,
-            drug_featurizer: Featurizer,
-            target_featurizer: Featurizer,
-            device: torch.device = torch.device("cpu"),
-            batch_size: int = 32,
-            shuffle: bool = True,
-            num_workers: int = 0,
-            header=0,
-            index_col=0,
-            sep=",",
-        ):
-        super().__init__(
-            data_dir,
-            drug_featurizer,
-            target_featurizer,
-            device,
-            batch_size,
-            shuffle,
-            num_workers,
-            header,
-            index_col,
-            sep,
-        )
-        self._data_dir = Path(data_dir)
-        self._train_path = Path("train_foldseek.csv")
-        self._val_path = Path("val_foldseek.csv")
-        self._test_path = Path("test_foldseek.csv")
-
 class BindSiteDataModule(DTIDataModule):
     """ DataModule used for training on DTI data as well as annotated binding sites.
     Uses the following data sets:
@@ -481,8 +437,6 @@ class BindSiteDataModule(DTIDataModule):
                 self.target_featurizer,
             )
 
-
->>>>>>> Stashed changes
 class TDCDataModule(pl.LightningDataModule):
     """ DataModule used for training on drug-target interaction data.
     Uses the dti_dg dataset
