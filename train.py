@@ -144,6 +144,8 @@ else:
         datamodule = TDCDataModule(**task_dm_kwargs)
     elif config.task in EnzPredDataModule.dataset_list():
         RuntimeError("EnzPredDataModule not implemented yet")
+    elif config.task == 'binding_site':
+        datamodule = BindSiteDataModule(**task_dm_kwargs)
     else:
         datamodule = DTIDataModule(**task_dm_kwargs)
 
@@ -180,7 +182,7 @@ else:
     )
 
 if not config.no_wandb:
-    wandb_logger = WandbLogger(project=config.wandb_proj, entity="abhinadduri",log_model="gradients")
+    wandb_logger = WandbLogger(project=config.wandb_proj, log_model="gradients")
     wandb_logger.watch(model)
     wandb_logger.experiment.config.update(OmegaConf.to_container(config, resolve=True, throw_on_missing=True))
 
