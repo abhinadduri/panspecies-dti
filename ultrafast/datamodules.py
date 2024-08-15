@@ -441,8 +441,6 @@ class DTIStructDataModule(DTIDataModule):
         self._val_path = Path("val_foldseek.csv")
         self._test_path = Path("test_foldseek.csv")
 
-<<<<<<< HEAD:ultrafast/datamodules.py
-=======
 class BindSiteDataModule(DTIDataModule):
     """ DataModule used for training on DTI data as well as annotated binding sites.
     Uses the following data sets:
@@ -530,7 +528,6 @@ class BindSiteDataModule(DTIDataModule):
                 self.drug_featurizer,
                 self.target_featurizer,
             )
-
 
 class TDCDataModule(pl.LightningDataModule):
     """ DataModule used for training on drug-target interaction data.
