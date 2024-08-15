@@ -36,6 +36,7 @@ parser.add_argument("--task", choices=[
     "biosnap_prot",
     "biosnap_mol",
     "dti_dg",
+    "binding_site",
     ], type=str, help="Task name. Could be biosnap, bindingdb, davis, biosnap_prot, biosnap_mol, dti_dg.",
 )
 parser.add_argument("--drug-featurizer", help="Drug featurizer", dest="drug_featurizer")
@@ -54,6 +55,8 @@ parser.add_argument('--out-type', default="cls", choices=['cls','mean'], help="u
 parser.add_argument("--num-layers-target", type=int, help="Number of layers in target transformer", dest="num_layers_target")
 parser.add_argument("--drug-layers", type=int, default=2, choices=[1, 2], help="Number of layers in drug transformer", dest="drug_layers")
 parser.add_argument("--dropout", type=float, help="Dropout rate for transformer", dest="dropout")
+parser.add_argument("--AG", type=float, help="Attention Guidance Loss Weight, if 0 then no AG loss")
+parser.add_argument("--PDG", type=float, help="Pattern Decorrelation Loss Weight, if 0 then no PDG loss")
 parser.add_argument("--batch-size", type=int, default=32, help="batch size for training/val/test")
 parser.add_argument("--no-wandb", action="store_true", help="Do not use wandb")
 
