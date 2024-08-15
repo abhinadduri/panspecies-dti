@@ -177,6 +177,31 @@ class ContrastiveDataset(Dataset):
 
         return anchorEmb, positiveEmb, negativeEmb
 
+class EmbedDataset(Dataset):
+    def __init__(
+        self,
+        data_file: str,
+        moltype: str,
+        drug_featurizer: Featurizer,
+        target_featurizer: Featurizer,
+    ):
+        self.data = pd.read_csv(data_file, sep="\t", header=None)
+        self.moltype = moltype
+
+        self.drug_featurizer = drug_featurizer
+        self.target_featurizer = target_featurizer
+
+    def __len__(self):
+        return len(self.data)
+
+    def __getitem__(self, i):
+        if self.moltype == "drug":
+            mol = self.drug_featurizer(self.data.iloc[i, 0])
+        elif self.moltype == "target":
+            mol = self.target_featurizer(self.data.iloc[i, 0])
+
+        return mol
+
 class DTIDataModule(pl.LightningDataModule):
     """ DataModule used for training on drug-target interaction data.
     Uses the following data sets:
