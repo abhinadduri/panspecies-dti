@@ -39,6 +39,40 @@ class FocalLoss(nn.Module):
 
         return loss
 
+class AttentionGuidanceLoss(torch.nn.Module):
+    def __init__(self):
+        super(AttentionGuidance_Loss, self).__init__()
+
+    def forward(self, attention_head, binding_site):
+        """
+        attention_head: torch.Tensor
+            The attention head from the transformer model. The shape should be (B, H, N)
+        binding_site: torch.Tensor
+            The binding site of the protein. The shape should be (B, N)
+        """
+        # pull out the first attention head
+        attention_head = attention_head[:,0,:]
+
+
+        # Calculate the loss
+        loss = torch.linalg.matrix_norm(attention_head - binding_site, ord='fro')
+
+        return loss
+
+class PatternDecorrelationLoss(torch.nn.Module):
+    def __init__(self):
+        super(PatternDecorrelationLoss, self).__init__()
+
+    def forward(self, attention_head):
+        """
+        attention_head: torch.Tensor
+            The attention head from the transformer model. The shape should be (B, H, N)
+        """
+        # Calculate the loss
+        loss = torch.linalg.matrix_norm(attention_head.mT @ attention_head - torch.eye(attention_head.shape[2]), ord='fro')
+
+        return loss
+
 class FeedForward(nn.Module):
     def __init__(self, dim, hidden_dim, dropout = 0.):
         super().__init__()
@@ -162,13 +196,14 @@ class Learned_Aggregation_Layer(nn.Module):
         attn = q @ k.transpose(-2, -1)
         attn = self.id(attn)
         attn = attn.softmax(dim=-1)
+        soft_attn = attn.clone().reshape(B,self.num_heads, N) 
         attn = self.attn_drop(attn)
 
         x_cls = (attn @ v).transpose(1, 2).reshape(B, 1, C)
         x_cls = self.proj(x_cls)
         x_cls = self.proj_drop(x_cls)
 
-        return x_cls.squeeze()
+        return x_cls.squeeze(), soft_attn
 
 class AverageNonZeroVectors(torch.nn.Module):
     def __init__(self):
@@ -235,12 +270,23 @@ class DrugTargetCoembeddingLightning(pl.LightningModule):
         elif args.prot_proj == "transformer":
             protein_projector = TargetEmbedding( self.target_dim, self.latent_dim, num_layers_target, dropout=dropout, out_type=args.out_type)
         elif args.prot_proj == "agg":
-            protein_projector = nn.Sequential(Learned_Aggregation_Layer(self.target_dim, num_heads=self.args.num_heads_agg, attn_drop=dropout, proj_drop=dropout), nn.Linear(self.target_dim, self.latent_dim))
+            protein_projector = nn.ModuleList([Learned_Aggregation_Layer(self.target_dim, attn_drop=dropout, proj_drop=dropout), nn.Linear(self.target_dim, self.latent_dim)])
 
         self.target_projector = nn.Sequential(
                 protein_projector,
                 self.activation()
         )
+
+
+
+        if not args.prot_proj == "agg":
+            self.target_projector = nn.Sequential(
+                    protein_projector,
+                    self.activation()
+            )
+        else:
+            self.target_projector = protein_projector.append(self.activation())
+
         if 'prot_proj' not in args or args.prot_proj == "avg":
             nn.init.xavier_normal_(self.target_projector[0][1].weight)
 
@@ -265,6 +311,14 @@ class DrugTargetCoembeddingLightning(pl.LightningModule):
             self.metrics = {"mse": self.val_mse, "pcc": self.val_pcc}
             self.loss_fct = torch.nn.MSELoss()
 
+        if args.AG:
+            self.AG = args.AG
+            self.AG_loss = AttentionGuidanceLoss()
+
+        if args.PDG:
+            self.PDG = args.PDG
+            self.PDG_loss = PatternDecorrelationLoss()
+
         if self.contrastive:
             self.contrastive_loss_fct = MarginScheduledLossFunction(
                     M_0 = args.margin_max,
@@ -284,7 +338,13 @@ class DrugTargetCoembeddingLightning(pl.LightningModule):
         # Add a batch dimension if it's missing
         if target.dim() == 2:
             target = target.unsqueeze(0)
-        target_projection = self.target_projector(target)
+        attn_head = None
+        if not self.args.prot_proj == "agg":
+            target_projection = self.target_projector(target)
+        else:
+            target_projection, attn_head = self.target_projector[0](target) #all of this to expose the Attention Head
+            target_projection = self.target_projector[1](target_projection)
+            target_projection = self.target_projector[2](target_projection)
 
         if self.classify:
             similarity = F.cosine_similarity(
@@ -296,7 +356,7 @@ class DrugTargetCoembeddingLightning(pl.LightningModule):
                 target_projection.view(-1, self.latent_dim, 1),
             ).squeeze()
 
-        return similarity
+        return similarity, attn_head
 
     def configure_optimizers(self):
         optimizers = []
@@ -328,15 +388,28 @@ class DrugTargetCoembeddingLightning(pl.LightningModule):
         return loss
 
     def non_contrastive_step(self, batch):
-        drug, protein, label = batch
-        similarity = self.forward(drug, protein)
+        if self.args.task != 'binding_site':
+            drug, protein, label = batch
+        else:
+            drug, protein, label, binding_site = batch
+        similarity, attn_head = self.forward(drug, protein)
 
         if self.classify:
             similarity = torch.squeeze(self.sigmoid(similarity))
 
         loss = self.loss_fct(similarity, label)
+        attn_loss = 0
+        if self.AG != 0:
+            attn_loss = self.AG_loss(attn_head, binding_site)
+            loss += self.AG * attn_loss
 
-        return loss
+        pdg_loss = 0
+        if self.PDG != 0:
+            attn_loss = self.PDG_loss(attn_head)
+            loss += self.PDG * attn_loss
+
+
+        return loss, attn_loss, pdg_loss
 
     def training_step(self, batch, batch_idx):
         if self.contrastive and self.current_epoch % 2 == 1:
@@ -352,10 +425,14 @@ class DrugTargetCoembeddingLightning(pl.LightningModule):
             else:
                 opt = self.optimizers()
             opt.zero_grad()
-            loss = self.non_contrastive_step(batch)
+            loss, attn_loss = self.non_contrastive_step(batch)
             self.manual_backward(loss)
             opt.step()
             self.log("train/loss", loss, sync_dist=True if self.trainer.num_devices > 1 else False)
+            if self.AG != 0:
+                self.log("train/AG_loss", attn_loss)
+            if self.PDG != 0:
+                self.log("train/PDG_loss", pdg_loss)
 
         return loss
 
