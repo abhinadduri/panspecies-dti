@@ -41,7 +41,7 @@ class FocalLoss(nn.Module):
 
 class AttentionGuidanceLoss(torch.nn.Module):
     def __init__(self):
-        super(AttentionGuidance_Loss, self).__init__()
+        super(AttentionGuidanceLoss, self).__init__()
 
     def forward(self, attention_head, binding_site):
         """
