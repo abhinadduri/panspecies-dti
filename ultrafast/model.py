@@ -543,10 +543,16 @@ class DrugTargetCoembeddingLightning(pl.LightningModule):
         if self.global_step == 0 and self.global_rank == 0 and not self.args.no_wandb:
             wandb.define_metric("val/aupr", summary="max")
         _, _, label = batch
-        loss, infoloss, similarity = self.non_contrastive_step(batch, train=False)
+        loss, attn_loss, pdg_loss, infoloss, similarity = self.non_contrastive_step(batch, train=False)
         self.log("val/loss", loss, sync_dist=True if self.trainer.num_devices > 1 else False)
         if self.InfoNCEWeight > 0:
             self.log("val/info_loss", infoloss, sync_dist=True if self.trainer.num_devices > 1 else False)
+
+        if self.AG != 0:
+            self.log("val/AG_loss", attn_loss)
+
+        if self.PDG != 0:
+            self.log("val/PDG_loss", pdg_loss)
 
         self.val_step_outputs.extend(similarity)
         self.val_step_targets.extend(label)
@@ -566,7 +572,7 @@ class DrugTargetCoembeddingLightning(pl.LightningModule):
 
     def test_step(self, batch, batch_idx):
         _, _, label = batch
-        _, _, similarity = self.non_contrastive_step(batch, train=False)
+        _, _, _, _, similarity = self.non_contrastive_step(batch, train=False)
 
         self.test_step_outputs.extend(similarity)
         self.test_step_targets.extend(label)
