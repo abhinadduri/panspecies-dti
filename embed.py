@@ -1,32 +1,65 @@
+# Script to generate embeddings from the DrugTargetCoembeddingLightning model
+# Input will be a list of drug smiles and target sequences
+# Output will be the embeddings of the drugs and targets
+#
+
+import os
 import argparse
+import torch
+from tqdm import tqdm
+import numpy as np
 import pandas as pd
+from torch.utils.data import DataLoader
+from datamodules import EmbedDataset
+from model import DrugTargetCoembeddingLightning
+from utils import get_featurizer
+from drug_target_embed.config import Config
 
-from featurizers import ProtBertFeaturizer
+def get_args():
+    parser = argparse.ArgumentParser(description='Generate embeddings from DrugTargetCoembeddingLightning model')
+    parser.add_argument('--data-file', type=str, help='Path to file containing molecules to embed')
+    parser.add_argument("--moltype", type=str, help="Molecule type", choices=["drug", "target"], default="target")])
 
-def add_args(parser: argparse.ArgumentParser):
-    parser.add_argument(
-        "--data-file",
-        type=str,
-        required=True,
-        default="./data/prots.tsv",
-        help="Path to the file containing data in CSV file format, with the protein sequence appearing as the last column. The column name should be \"Target Sequence\"",
-    )
+    parser.add_argument("--drug-featurizer", help="Drug featurizer", dest="drug_featurizer", default="MorganFeaturizer")
+    parser.add_argument("--target-featurizer", help="Target featurizer", dest="target_featurizer", default="ESM2Featurizer")
 
-def main(data_file: str):
-    protbert = ProtBertFeaturizer()
-    out_file = data_file + ".prot.h5"
-    prot_list = []
+    parser.add_argument('--checkpoint', type=str, help='Path to model checkpoint')
+    parser.add_argument('--output_path', type=str, help='path to save embeddings')
+    parser.add_argument('--batch_size', type=int, default=128, help='Batch size for inference')
+    parser.add_argument('--device', type=str, default=0, help='CUDA device. If CUDA is not available, this will be ignored.')
+    return parser.parse_args()
 
-    df = pd.read_csv(data_file)
-    headers = df.columns
-    assert "Target Sequence" in headers
+if __name__ == '__main__':
+    args = get_args()
 
-    prot_list = df["Target Sequence"].to_list()
+    drug_featurizer = get_featurizer(config.drug_featurizer)
+    target_featurizer = get_featurizer(config.target_featurizer)
 
-    protbert.write_to_disk(prot_list, file_path=out_file)
+    model = DrugTargetCoembeddingLightning.load_from_checkpoint(args.checkpoint)
+    model.eval()
+    use_cuda = torch.cuda.is_available()
+    device = torch.device(f"cuda:{args.device}") if use_cuda else torch.device("cpu")
+    model.to(device)
+    
+    dataset = EmbedDataset(args.data_file, moltype, drug_featurizer, target_featurizer)
 
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    add_args(parser)
-    args = parser.parse_args()
-    main(args.data_file)
+    dataloader = DataLoader(dataset, batch_size=args.batch_size, shuffle=False)
+
+    embeddings = []
+    with torch.no_grad():
+        for mols in tqdm(dataloader):
+            mols = mols.to(device)
+            emb = model.embed(batch, sample_type=args.moltype)
+            embeddings.append(emb.cpu().numpy())
+    embeddings = np.concatenate(embeddings, axis=0)
+
+    # make sure directories for output_path exist
+    os.makedirs(os.path.dirname(args.output_path), exist_ok=True)
+
+    np.save(args.output_path, embeddings)
+
+
+    
+
+
+

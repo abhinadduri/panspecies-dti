@@ -392,6 +392,12 @@ class DrugTargetCoembeddingLightning(pl.LightningModule):
         self.test_step_outputs.clear()
         self.test_step_targets.clear()
 
+    def embed(self, x, sample_type="drug"):
+        if sample_type == "drug":
+            return self.drug_projector(x)
+        elif sample_type == "target":
+            return self.target_projector(x)
+
 
 def main():
     from featurizers import ProtBertFeaturizer
