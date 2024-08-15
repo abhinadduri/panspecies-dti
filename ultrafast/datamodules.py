@@ -568,7 +568,6 @@ class BindSiteDataModule(DTIDataModule):
                 self.target_featurizer,
             )
 
-
 class TDCDataModule(pl.LightningDataModule):
     """ DataModule used for training on drug-target interaction data.
     Uses the dti_dg dataset
