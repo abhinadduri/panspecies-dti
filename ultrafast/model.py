@@ -454,14 +454,25 @@ class DrugTargetCoembeddingLightning(pl.LightningModule):
     def validation_step(self, batch, batch_idx):
         if self.global_step == 0 and self.global_rank == 0 and not self.args.no_wandb:
             wandb.define_metric("val/aupr", summary="max")
-        drug, protein, label = batch
-        similarity = self.forward(drug, protein)
+        if self.args.task != 'binding_site':
+            drug, protein, label = batch
+        else:
+            drug, protein, label, binding_site = batch
+        similarity, attn_head = self.forward(drug, protein)
 
         if self.classify:
             similarity = torch.squeeze(F.sigmoid(similarity))
 
         loss = self.loss_fct(similarity, label)
         self.log("val/loss", loss, sync_dist=True if self.trainer.num_devices > 1 else False)
+
+        if self.AG != 0:
+            attn_loss = self.AG_loss(attn_head, binding_site)
+            self.log("val/AG_loss", attn_loss)
+
+        if self.PDG != 0:
+            pdg_loss = self.PDG_loss(attn_head)
+            self.log("val/PDG_loss", pdg_loss)
 
         self.val_step_outputs.extend(similarity)
         self.val_step_targets.extend(label)
@@ -480,8 +491,11 @@ class DrugTargetCoembeddingLightning(pl.LightningModule):
         self.val_step_targets.clear()
 
     def test_step(self, batch, batch_idx):
-        drug, protein, label = batch
-        similarity = self.forward(drug, protein)
+        if self.args.task != 'binding_site':
+            drug, protein, label = batch
+        else:
+            drug, protein, label, binding_site = batch
+        similarity, attn_head = self.forward(drug, protein)
 
         if self.classify:
             similarity = torch.squeeze(F.sigmoid(similarity))
