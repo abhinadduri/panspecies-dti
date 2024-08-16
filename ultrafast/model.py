@@ -2,7 +2,7 @@ import torch
 import wandb
 from torch import nn
 import torch.nn.functional as F
-from ultrafast.contrastive_loss import MarginScheduledLossFunction
+from ultrafast.loss import MarginScheduledLossFunction, AttentionGuidanceLoss, PatternDecorrelationLoss
 
 import pytorch_lightning as pl
 import torchmetrics
@@ -205,6 +205,19 @@ class Learned_Aggregation_Layer(nn.Module):
 
         return x_cls.squeeze(), soft_attn
 
+class LearnedAgg_Projection(nn.Module):
+    def __init__(self, target_dim, latent_dim, activation, num_heads=1, attn_drop=0., proj_drop=0.):
+        super().__init__()
+        self.proj = Learned_Aggregation_Layer(target_dim, num_heads, attn_drop=attn_drop, proj_drop=proj_drop)
+        self.linear = nn.Linear(target_dim, latent_dim)
+        self.non_linearity = activation()
+
+    def forward(self, x):
+        proj, attn_head = self.proj(x)
+        proj = self.linear(proj)
+        return self.non_linearity(proj), attn_head
+
+
 class AverageNonZeroVectors(torch.nn.Module):
     def __init__(self):
         super(AverageNonZeroVectors, self).__init__()
@@ -270,7 +283,7 @@ class DrugTargetCoembeddingLightning(pl.LightningModule):
         elif args.prot_proj == "transformer":
             protein_projector = TargetEmbedding( self.target_dim, self.latent_dim, num_layers_target, dropout=dropout, out_type=args.out_type)
         elif args.prot_proj == "agg":
-            protein_projector = nn.ModuleList([Learned_Aggregation_Layer(self.target_dim, attn_drop=dropout, proj_drop=dropout), nn.Linear(self.target_dim, self.latent_dim)])
+            protein_projector = LearnedAgg_Projection(self.target_dim, self.latent_dim, self.activation, num_heads=args.num_heads_agg, attn_drop=dropout, proj_drop=dropout)
 
         self.target_projector = nn.Sequential(
                 protein_projector,
@@ -278,14 +291,13 @@ class DrugTargetCoembeddingLightning(pl.LightningModule):
         )
 
 
-
-        if not args.prot_proj == "agg":
+        if args.prot_proj != "agg":
             self.target_projector = nn.Sequential(
                     protein_projector,
                     self.activation()
             )
         else:
-            self.target_projector = protein_projector.append(self.activation())
+            self.target_projector = protein_projector
 
         if 'prot_proj' not in args or args.prot_proj == "avg":
             nn.init.xavier_normal_(self.target_projector[0][1].weight)
@@ -339,12 +351,10 @@ class DrugTargetCoembeddingLightning(pl.LightningModule):
         if target.dim() == 2:
             target = target.unsqueeze(0)
         attn_head = None
-        if not self.args.prot_proj == "agg":
+        if self.args.prot_proj != "agg":
             target_projection = self.target_projector(target)
         else:
-            target_projection, attn_head = self.target_projector[0](target) #all of this to expose the Attention Head
-            target_projection = self.target_projector[1](target_projection)
-            target_projection = self.target_projector[2](target_projection)
+            target_projection, attn_head = self.target_projector(target)
 
         if self.classify:
             similarity = F.cosine_similarity(
@@ -398,18 +408,16 @@ class DrugTargetCoembeddingLightning(pl.LightningModule):
             similarity = torch.squeeze(self.sigmoid(similarity))
 
         loss = self.loss_fct(similarity, label)
-        attn_loss = 0
+        ag_loss = 0
         if self.AG != 0:
-            attn_loss = self.AG_loss(attn_head, binding_site)
-            loss += self.AG * attn_loss
+            ag_loss = self.AG_loss(attn_head, binding_site)
 
         pdg_loss = 0
         if self.PDG != 0:
-            attn_loss = self.PDG_loss(attn_head)
-            loss += self.PDG * attn_loss
+            pdg_loss = self.PDG_loss(attn_head)
 
 
-        return loss, attn_loss, pdg_loss
+        return loss, {'AG':ag_loss, 'PDG':pdg_loss}
 
     def training_step(self, batch, batch_idx):
         if self.contrastive and self.current_epoch % 2 == 1:
@@ -425,14 +433,15 @@ class DrugTargetCoembeddingLightning(pl.LightningModule):
             else:
                 opt = self.optimizers()
             opt.zero_grad()
-            loss, attn_loss = self.non_contrastive_step(batch)
-            self.manual_backward(loss)
+            loss, attn_losses = self.non_contrastive_step(batch)
+            tot_loss = loss + self.PDG * attn_losses['PDG'] + self.AG * attn_losses['AG']
+            self.manual_backward(tot_loss)
             opt.step()
             self.log("train/loss", loss, sync_dist=True if self.trainer.num_devices > 1 else False)
             if self.AG != 0:
-                self.log("train/AG_loss", attn_loss)
+                self.log("train/AG_loss", attn_losses['AG'])
             if self.PDG != 0:
-                self.log("train/PDG_loss", pdg_loss)
+                self.log("train/PDG_loss", attn_losses['PDG'])
 
         return loss
 
