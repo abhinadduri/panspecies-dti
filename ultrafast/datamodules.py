@@ -87,6 +87,27 @@ def drug_target_collate_fn(args: T.Tuple[torch.Tensor, torch.Tensor, torch.Tenso
 
     return drugs, targets, labels
 
+def drug_target_bs_collate_fn(args: T.Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]):
+    """
+    Collate function for PyTorch data loader -- turn a batch of triplets into a triplet of batches
+
+    :param args: Batch of training samples with molecule, protein, affinity, and binding site mask
+    :type args: Iterable[Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]]
+    :return: Create a batch of examples
+    :rtype: T.Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]
+    """
+    d_emb = [a[0] for a in args]
+    t_emb = [a[1] for a in args]
+    labs = [a[2] for a in args]
+    bs = [a[3] for a in args]
+
+    drugs = torch.stack(d_emb, 0)
+    targets = pad_sequence(t_emb, batch_first=True)
+    labels = torch.stack(labs, 0)
+    binding_sites = pad_sequence(bs, batch_first=True)
+
+    return drugs, targets, labels, binding_sites
+
 def contrastive_collate_fn(args: T.Tuple[torch.Tensor, torch.Tensor, torch.Tensor]):
     """
     Collate function for PyTorch data loader -- turn a batch of triplets into a triplet of batches
@@ -205,7 +226,7 @@ class BindingSiteDataset(Dataset):
         label = torch.tensor(self.labels.iloc[i], dtype=torch.float32)
         # create a zero tensor with the same length as target
         # then set the location of each binding site residue to 1, all others are 0
-        binding_site = torch.zeros_like(target)
+        binding_site = torch.zeros(target.shape[0])
         binding_site[self.binding_sites.iloc[i]] = 1
 
         return drug, target, label, binding_site
@@ -477,6 +498,8 @@ class BindSiteDataModule(DTIDataModule):
         self._val_path = Path("val.csv")
         self._test_path = Path("test.csv")
 
+        self._loader_kwargs["collate_fn"] = drug_target_bs_collate_fn
+
     def binding_str_to_list(self, binding_str):
         return list(map(int, binding_str.split(" ")))
 
@@ -516,6 +539,7 @@ class BindSiteDataModule(DTIDataModule):
                 self.df_val[self._drug_column],
                 self.df_val[self._target_column],
                 self.df_val[self._label_column],
+                self.df_val[self._bindingsite_column],
                 self.drug_featurizer,
                 self.target_featurizer,
             )
@@ -525,6 +549,7 @@ class BindSiteDataModule(DTIDataModule):
                 self.df_test[self._drug_column],
                 self.df_test[self._target_column],
                 self.df_test[self._label_column],
+                self.df_test[self._bindingsite_column],
                 self.drug_featurizer,
                 self.target_featurizer,
             )
