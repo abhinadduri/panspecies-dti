@@ -2,7 +2,8 @@ import torch
 import wandb
 from torch import nn
 import torch.nn.functional as F
-from ultrafast.contrastive_loss import MarginScheduledLossFunction, InfoNCELoss
+
+from ultrafast.loss import MarginScheduledLossFunction, InfoNCELoss, AttentionGuidanceLoss, PatternDecorrelationLoss
 
 import pytorch_lightning as pl
 import torchmetrics
@@ -205,6 +206,19 @@ class Learned_Aggregation_Layer(nn.Module):
 
         return x_cls.squeeze(), soft_attn
 
+class LearnedAgg_Projection(nn.Module):
+    def __init__(self, target_dim, latent_dim, activation, num_heads=1, attn_drop=0., proj_drop=0.):
+        super().__init__()
+        self.proj = Learned_Aggregation_Layer(target_dim, num_heads, attn_drop=attn_drop, proj_drop=proj_drop)
+        self.linear = nn.Linear(target_dim, latent_dim)
+        self.non_linearity = activation()
+
+    def forward(self, x):
+        proj, attn_head = self.proj(x)
+        proj = self.linear(proj)
+        return self.non_linearity(proj), attn_head
+
+
 class AverageNonZeroVectors(torch.nn.Module):
     def __init__(self, eps=1e-8):
         super(AverageNonZeroVectors, self).__init__()
@@ -267,7 +281,7 @@ class DrugTargetCoembeddingLightning(pl.LightningModule):
         elif args.prot_proj == "transformer":
             protein_projector = TargetEmbedding( self.target_dim, self.latent_dim, num_layers_target, dropout=dropout, out_type=args.out_type)
         elif args.prot_proj == "agg":
-            protein_projector = nn.ModuleList([Learned_Aggregation_Layer(self.target_dim, attn_drop=dropout, proj_drop=dropout), nn.Linear(self.target_dim, self.latent_dim)])
+            protein_projector = LearnedAgg_Projection(self.target_dim, self.latent_dim, self.activation, num_heads=args.num_heads_agg, attn_drop=dropout, proj_drop=dropout)
 
         if 'model_size' in args and args.model_size == "large":  # override the above settings and use a large model for drug and target
             self.drug_projector = nn.Sequential(
@@ -479,23 +493,21 @@ class DrugTargetCoembeddingLightning(pl.LightningModule):
         loss = self.loss_fct(similarity, label) 
         infoloss = 0
         if self.InfoNCEWeight > 0:
-            infoloss = self.InfoNCEWeight * self.infoNCE_loss_fct(drug, protein, label)
+            infoloss = self.infoNCE_loss_fct(drug, protein, label)
 
-        attn_loss = 0
+        ag_loss = 0
         if self.AG != 0:
-            attn_loss = self.AG_loss(attn_head, binding_site)
-            loss += self.AG * attn_loss
+            ag_loss = self.AG_loss(attn_head, binding_site)
 
         pdg_loss = 0
         if self.PDG != 0:
-            attn_loss = self.PDG_loss(attn_head)
-            loss += self.PDG * attn_loss
+            pdg_loss = self.PDG_loss(attn_head)
 
 
         if train:
-            return loss * self.CEWeight, attn_loss, pdg_loss, infoloss
+            return loss * self.CEWeight, {'AG':ag_loss, 'PDG':pdg_loss, "InfoNCE": infoloss}
         else:
-            return loss, attn_loss, pdg_loss, infoloss, similarity
+            return loss, {'AG':ag_loss, 'PDG':pdg_loss, "InfoNCE": infoloss}, similarity
 
     def training_step(self, batch, batch_idx):
         if self.contrastive and self.current_epoch % 2 == 1:
@@ -511,16 +523,17 @@ class DrugTargetCoembeddingLightning(pl.LightningModule):
             else:
                 opt = self.optimizers()
             opt.zero_grad()
-            loss, attn_loss, pdg_loss, infoloss = self.non_contrastive_step(batch)
-            self.manual_backward(loss+infoloss)
+            loss, oth_losses = self.non_contrastive_step(batch)
+            tot_loss = loss + self.PDG * oth_losses['PDG'] + self.AG * oth_losses['AG'] + self.InfoNCEWeight * oth_losses['InfoNCE']
+            self.manual_backward(tot_loss)
             opt.step()
             self.log("train/loss", loss, sync_dist=True if self.trainer.num_devices > 1 else False)
             if self.InfoNCEWeight > 0:
                 self.log("train/info_loss", infoloss, sync_dist=True if self.trainer.num_devices > 1 else False)
             if self.AG != 0:
-                self.log("train/AG_loss", attn_loss)
+                self.log("train/AG_loss", attn_losses['AG'])
             if self.PDG != 0:
-                self.log("train/PDG_loss", pdg_loss)
+                self.log("train/PDG_loss", attn_losses['PDG'])
 
         return loss
 

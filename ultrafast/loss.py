@@ -123,3 +123,37 @@ class InfoNCELoss(nn.Module):
        all_losses = -torch.log(numerator/ torch.sum(denominator, dim=1))
        loss = torch.sum(all_losses) / (2 * batch_size)
        return loss
+
+class AttentionGuidanceLoss(torch.nn.Module):
+    def __init__(self):
+        super(AttentionGuidanceLoss, self).__init__()
+
+    def forward(self, attention_head, binding_site):
+        """
+        attention_head: torch.Tensor
+            The attention head from the transformer model. The shape should be (B, H, N)
+        binding_site: torch.Tensor
+            The binding site of the protein. The shape should be (B, N)
+        """
+        # pull out the first attention head
+        attention_head = attention_head[:,0,:]
+
+
+        # Calculate the loss
+        loss = torch.linalg.matrix_norm(attention_head - binding_site, ord='fro').square()
+
+        return loss
+
+class PatternDecorrelationLoss(torch.nn.Module):
+    def __init__(self):
+        super(PatternDecorrelationLoss, self).__init__()
+
+    def forward(self, attention_head):
+        """
+        attention_head: torch.Tensor
+            The attention head from the transformer model. The shape should be (B, H, N)
+        """
+        # Calculate the loss
+        loss = torch.linalg.matrix_norm(attention_head.mT @ attention_head - torch.eye(attention_head.shape[2]).to(attention_head), ord='fro').square().sum()
+
+        return loss
