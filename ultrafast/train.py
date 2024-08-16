@@ -16,15 +16,16 @@ import argparse
 
 from ultrafast.callbacks import eval_pcba
 from ultrafast.datamodules import (
-    get_task_dir,
-    DTIDataModule,
-    DTIStructDataModule,
-    TDCDataModule,
-    DUDEDataModule,
-    EnzPredDataModule,
-    CombinedDataModule,
-    MergedDataModule
-)
+        get_task_dir,
+        DTIDataModule,
+        DTIStructDataModule,
+        TDCDataModule,
+        DUDEDataModule,
+        EnzPredDataModule,
+        CombinedDataModule,
+        MergedDataModule
+        BindSiteDataModule,
+        )
 from ultrafast.model import DrugTargetCoembeddingLightning
 from ultrafast.utils import get_featurizer, xavier_normal
 
