@@ -239,6 +239,7 @@ class DrugTargetCoembeddingLightning(pl.LightningModule):
                     N_restart = args.margin_t0,
                     update_fn = args.margin_fn
                     )
+        self.save_hyperparameters()
 
         self.val_step_outputs = []
         self.val_step_targets = []
