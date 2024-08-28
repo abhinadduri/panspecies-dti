@@ -12,7 +12,7 @@ from utils import get_featurizer
 
 def get_args():
     parser = argparse.ArgumentParser(description='Generate embeddings from DrugTargetCoembeddingLightning model')
-    parser.add_argument('--data-file', type=str, required=True, help='Path to file containing molecules to embed')
+    parser.add_argument('--data-file', type=str, required=True, help='Path to file containing molecules to embed, in tsv format. With header and columns: "SMILES" for drugs, "Target Sequence" for targets')
     parser.add_argument("--moltype", type=str, help="Molecule type", choices=["drug", "target"], default="target")
 
     parser.add_argument('--checkpoint', type=str, required=True, help='Path to model checkpoint')
