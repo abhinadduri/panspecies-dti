@@ -239,6 +239,7 @@ class DrugTargetCoembeddingLightning(pl.LightningModule):
                     N_restart = args.margin_t0,
                     update_fn = args.margin_fn
                     )
+        self.save_hyperparameters()
 
         self.val_step_outputs = []
         self.val_step_targets = []
@@ -341,7 +342,7 @@ class DrugTargetCoembeddingLightning(pl.LightningModule):
             sch.step()
 
     def validation_step(self, batch, batch_idx):
-        if self.global_step == 0:
+        if self.global_step == 0 and not self.args.no_wandb:
             wandb.define_metric("val/aupr", summary="max")
         drug, protein, label = batch
         similarity = self.forward(drug, protein)
