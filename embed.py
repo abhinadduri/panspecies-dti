@@ -11,14 +11,14 @@ from utils import get_featurizer
 
 def get_args():
     parser = argparse.ArgumentParser(description='Generate embeddings from DrugTargetCoembeddingLightning model')
-    parser.add_argument('--data-file', type=str, help='Path to file containing molecules to embed')
-    parser.add_argument("--moltype", type=str, help="Molecule type", choices=["drug", "target"], default="target")])
+    parser.add_argument('--data-file', type=str, required=True, help='Path to file containing molecules to embed')
+    parser.add_argument("--moltype", type=str, help="Molecule type", choices=["drug", "target"], default="target")
 
     parser.add_argument("--drug-featurizer", help="Drug featurizer", dest="drug_featurizer", default="MorganFeaturizer")
     parser.add_argument("--target-featurizer", help="Target featurizer", dest="target_featurizer", default="ESM2Featurizer")
 
-    parser.add_argument('--checkpoint', type=str, help='Path to model checkpoint')
-    parser.add_argument('--output_path', type=str, help='path to save embeddings. Currently only supports numpy format.')
+    parser.add_argument('--checkpoint', type=str, required=True, help='Path to model checkpoint')
+    parser.add_argument('--output_path', type=str, required=True, help='path to save embeddings. Currently only supports numpy format.')
     parser.add_argument('--batch_size', type=int, default=128, help='Batch size for inference')
     parser.add_argument('--device', type=str, default=0, help='CUDA device. If CUDA is not available, this will be ignored.')
     return parser.parse_args()
@@ -26,8 +26,8 @@ def get_args():
 if __name__ == '__main__':
     args = get_args()
 
-    drug_featurizer = get_featurizer(config.drug_featurizer)
-    target_featurizer = get_featurizer(config.target_featurizer)
+    drug_featurizer = get_featurizer(args.drug_featurizer)
+    target_featurizer = get_featurizer(args.target_featurizer)
 
     model = DrugTargetCoembeddingLightning.load_from_checkpoint(args.checkpoint)
     model.eval()
@@ -35,7 +35,7 @@ if __name__ == '__main__':
     device = torch.device(f"cuda:{args.device}") if use_cuda else torch.device("cpu")
     model.to(device)
     
-    dataset = EmbedDataset(args.data_file, moltype, drug_featurizer, target_featurizer)
+    dataset = EmbedDataset(args.data_file, args.moltype, drug_featurizer, target_featurizer)
 
     dataloader = DataLoader(dataset, batch_size=args.batch_size, shuffle=False)
 
@@ -43,7 +43,7 @@ if __name__ == '__main__':
     with torch.no_grad():
         for mols in tqdm(dataloader):
             mols = mols.to(device)
-            emb = model.embed(batch, sample_type=args.moltype)
+            emb = model.embed(mols, sample_type=args.moltype)
             embeddings.append(emb.cpu().numpy())
     embeddings = np.concatenate(embeddings, axis=0)
 
