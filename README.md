@@ -29,6 +29,5 @@ The goal to start attention pooling training is to run the above script on all n
 # Embed proteins and molecules
 ```
 # Get embeddings with pre-trained model
-ultrafast-embed --data-file data/BIOSNAP/full_data/train.csv
-ultrafast-embed --data-file data/BIOSNAP/full_data/train.csv --checkpoint <your_checkpoint.ckpt> --output_path results/embeddings.npy
+ultrafast-embed --data-file data/BIOSNAP/full_data/train.csv --checkpoint <your_checkpoint>.ckpt --output_path results/embeddings.npy
 ```
