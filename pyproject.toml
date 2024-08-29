@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=42", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ultrafast"
+version = "0.1.0"
+description = "Ultra-high-throughput Virtual Screening"
+authors = [{ name = "Caleb Ellington", email = "cellingt@andrew.cmu.edu" }]
+dependencies = [
+    "lightning==2.4.0",
+    "torch==2.4.0",
+    "pandas==2.2.2",
+    "wandb==0.17.8",
+    "omegaconf==2.3.0",
+    "scikit_learn==1.2.2",
+    "PyTDC==1.0.6",
+    "rdkit==2023.9.5",
+    "datamol==0.12.5",
+    "esm==3.0.3",
+    "molfeat==0.10.1",
+    "transformers==4.30.2",
+]
+
+[project.scripts]
+ultrafast-train = "ultrafast.train:train_cli"
+ultrafast-embed = "ultrafast.embed:embed_cli"
+
+[tool.setuptools]
+packages = ["ultrafast"] 
+include-package-data = true

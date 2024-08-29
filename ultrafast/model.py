@@ -2,7 +2,7 @@ import torch
 import wandb
 from torch import nn
 import torch.nn.functional as F
-from contrastive_loss import MarginScheduledLossFunction
+from ultrafast.contrastive_loss import MarginScheduledLossFunction
 
 import pytorch_lightning as pl
 import torchmetrics
@@ -200,8 +200,9 @@ class DrugTargetCoembeddingLightning(pl.LightningModule):
 
 
         
-        protein_projector=nn.Sequential(AverageNonZeroVectors(), nn.Linear(self.target_dim, self.latent_dim))
-        if args.prot_proj == "transformer":
+        if 'prot_proj' not in args or args.prot_proj == "avg":
+            protein_projector=nn.Sequential(AverageNonZeroVectors(), nn.Linear(self.target_dim, self.latent_dim))
+        elif args.prot_proj == "transformer":
             protein_projector = TargetEmbedding( self.target_dim, self.latent_dim, num_layers_target, dropout=dropout, out_type=args.out_type)
         elif args.prot_proj == "agg":
             protein_projector = nn.Sequential(Learned_Aggregation_Layer(self.target_dim, attn_drop=dropout, proj_drop=dropout), nn.Linear(self.target_dim, self.latent_dim))
@@ -210,7 +211,7 @@ class DrugTargetCoembeddingLightning(pl.LightningModule):
                 protein_projector,
                 self.activation()
         )
-        if args.prot_proj == "conplex":
+        if 'prot_proj' not in args or args.prot_proj == "avg":
             nn.init.xavier_normal_(self.target_projector[0][1].weight)
 
         if self.classify:

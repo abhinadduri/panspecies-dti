@@ -1,7 +1,7 @@
 import argparse
 import pandas as pd
 
-from featurizers import ProtBertFeaturizer
+from ultrafast.featurizers import ProtBertFeaturizer
 
 def add_args(parser: argparse.ArgumentParser):
     parser.add_argument(

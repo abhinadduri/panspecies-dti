@@ -6,11 +6,12 @@ from tqdm import tqdm
 import numpy as np
 import pandas as pd
 from torch.utils.data import DataLoader
-from datamodules import EmbedDataset, embed_collate_fn
-from model import DrugTargetCoembeddingLightning
-from utils import get_featurizer
+from ultrafast.datamodules import EmbedDataset, embed_collate_fn
+from ultrafast.model import DrugTargetCoembeddingLightning
+from ultrafast.utils import get_featurizer
 
-def get_args():
+
+def embed_cli():
     parser = argparse.ArgumentParser(description='Generate embeddings from DrugTargetCoembeddingLightning model')
     parser.add_argument('--data-file', type=str, required=True, help='Path to file containing molecules to embed, in tsv format. With header and columns: "SMILES" for drugs, "Target Sequence" for targets')
     parser.add_argument("--moltype", type=str, help="Molecule type", choices=["drug", "target"], default="target")
@@ -19,15 +20,30 @@ def get_args():
     parser.add_argument('--output_path', type=str, required=True, help='path to save embeddings. Currently only supports numpy format.')
     parser.add_argument('--batch_size', type=int, default=128, help='Batch size for inference')
     parser.add_argument('--device', type=str, default=0, help='CUDA device. If CUDA is not available, this will be ignored.')
-    return parser.parse_args()
+    args = parser.parse_args()
+    embed(**vars(args))
 
-if __name__ == '__main__':
-    args = get_args()
 
+def embed(
+    checkpoint: str,
+    device: int,
+    data_file: str,
+    moltype: str,
+    output_path: str,
+    batch_size: int,
+):
+    args = argparse.Namespace(
+        checkpoint=checkpoint,
+        device=device,
+        data_file=data_file,
+        moltype=moltype,
+        output_path=output_path,
+        batch_size=batch_size
+    )
     model = DrugTargetCoembeddingLightning.load_from_checkpoint(args.checkpoint)
     model.eval()
     use_cuda = torch.cuda.is_available()
-    device = torch.device(f"cuda:{args.device}") if use_cuda else torch.device("cpu")
+    device = torch.device(f"cuda:{device}") if use_cuda else torch.device("cpu")
     model.to(device)
     
     drug_featurizer = get_featurizer(model.args.drug_featurizer)
@@ -53,3 +69,5 @@ if __name__ == '__main__':
     np.save(args.output_path, embeddings)
 
 
+if __name__ == '__main__':
+    embed_cli()
