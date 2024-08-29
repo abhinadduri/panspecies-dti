@@ -40,6 +40,28 @@ def get_task_dir(task_name: str):
 
     return Path(task_paths[task_name.lower()]).resolve()
 
+def embed_collate_fn(args: T.Tuple[torch.Tensor, torch.Tensor], moltype="target"):
+    """
+    Collate function for PyTorch data loader -- turn a batch of molecules into a batch of tensors
+
+    :param args: Batch of molecules
+    :type args: Iterable[Tuple[torch.Tensor, torch.Tensor]]
+    :param moltype: Molecule type
+    :type moltype: str
+    :return: Create a batch of examples
+    :rtype: torch.Tensor
+    """
+    # m_emb = [a for a in args]
+
+    if moltype == "drug":
+        mols = torch.stack(args, 0)
+    elif moltype == "target":
+        mols = pad_sequence(args, batch_first=True)
+    else:
+        raise ValueError("moltype must be one of ['drug', 'target']")
+
+    return mols
+
 def drug_target_collate_fn(args: T.Tuple[torch.Tensor, torch.Tensor, torch.Tensor]):
     """
     Collate function for PyTorch data loader -- turn a batch of triplets into a triplet of batches
@@ -176,6 +198,33 @@ class ContrastiveDataset(Dataset):
         negativeEmb = self.posneg_featurizer(self.negatives[i])
 
         return anchorEmb, positiveEmb, negativeEmb
+
+class EmbedDataset(Dataset):
+    def __init__(
+        self,
+        data_file: str,
+        moltype: str,
+        drug_featurizer: Featurizer,
+        target_featurizer: Featurizer,
+    ):
+        self.data = pd.read_table(data_file, header=0)
+        self.moltype = moltype
+
+        self.drug_featurizer = drug_featurizer
+        self.target_featurizer = target_featurizer
+
+        self._column = "SMILES" if self.moltype == "drug" else "Target Sequence"
+
+    def __len__(self):
+        return len(self.data)
+
+    def __getitem__(self, i):
+        if self.moltype == "drug":
+            mol = self.drug_featurizer(self.data[self._column].iloc[i])
+        elif self.moltype == "target":
+            mol = self.target_featurizer(self.data[self._column].iloc[i])
+
+        return mol
 
 class DTIDataModule(pl.LightningDataModule):
     """ DataModule used for training on drug-target interaction data.

@@ -36,11 +36,7 @@ class Featurizer:
 
     def __call__(self, seq: str) -> torch.Tensor:
         if seq not in self.features:
-            seq_h5 = sanitize_string(seq)
-            if not self._preloaded and self._h5 is not None and seq_h5 in self._h5:
-                return torch.from_numpy(self._h5[seq_h5][:])
-            else:
-                self._features[seq] = self.transform(seq)
+            self._features[seq] = self.transform(seq)
 
         return self._features[seq]
 

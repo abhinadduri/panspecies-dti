@@ -22,7 +22,6 @@ from datamodules import (
         CombinedDataModule,
         )
 from model import DrugTargetCoembeddingLightning
-from trainloop import ConPlexEpochLoop
 from utils import get_featurizer, xavier_normal
 
 parser = argparse.ArgumentParser(description="PLM_DTI Training.")
