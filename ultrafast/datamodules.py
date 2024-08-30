@@ -8,7 +8,7 @@ import pytorch_lightning as pl
 from numpy.random import choice
 from sklearn.model_selection import KFold, train_test_split
 from tdc.benchmark_group import dti_dg_group
-from featurizers import Featurizer
+from ultrafast.featurizers import Featurizer
 
 from pathlib import Path
 import typing as T
@@ -207,7 +207,7 @@ class EmbedDataset(Dataset):
         drug_featurizer: Featurizer,
         target_featurizer: Featurizer,
     ):
-        self.data = pd.read_table(data_file, header=0)
+        self.data = pd.read_table(data_file, header=0, sep=None)
         self.moltype = moltype
 
         self.drug_featurizer = drug_featurizer

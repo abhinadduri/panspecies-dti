@@ -2,7 +2,7 @@ import torch
 import wandb
 from torch import nn
 import torch.nn.functional as F
-from contrastive_loss import MarginScheduledLossFunction
+from ultrafast.contrastive_loss import MarginScheduledLossFunction
 
 import pytorch_lightning as pl
 import torchmetrics
@@ -169,7 +169,6 @@ class DrugTargetCoembeddingLightning(pl.LightningModule):
         dropout=0,
         lr=1e-4,
         contrastive=False,
-        device='cpu',
         args=None,
     ):
         super().__init__()
@@ -183,7 +182,6 @@ class DrugTargetCoembeddingLightning(pl.LightningModule):
         self.classify = classify
         self.contrastive = contrastive
         self.args = args
-        self.device_ = device
 
         if args.drug_layers == 1:
             self.drug_projector = nn.Sequential(
@@ -200,8 +198,9 @@ class DrugTargetCoembeddingLightning(pl.LightningModule):
 
 
         
-        protein_projector=nn.Sequential(AverageNonZeroVectors(), nn.Linear(self.target_dim, self.latent_dim))
-        if args.prot_proj == "transformer":
+        if 'prot_proj' not in args or args.prot_proj == "avg":
+            protein_projector=nn.Sequential(AverageNonZeroVectors(), nn.Linear(self.target_dim, self.latent_dim))
+        elif args.prot_proj == "transformer":
             protein_projector = TargetEmbedding( self.target_dim, self.latent_dim, num_layers_target, dropout=dropout, out_type=args.out_type)
         elif args.prot_proj == "agg":
             protein_projector = nn.Sequential(Learned_Aggregation_Layer(self.target_dim, attn_drop=dropout, proj_drop=dropout), nn.Linear(self.target_dim, self.latent_dim))
@@ -210,7 +209,7 @@ class DrugTargetCoembeddingLightning(pl.LightningModule):
                 protein_projector,
                 self.activation()
         )
-        if args.prot_proj == "conplex":
+        if 'prot_proj' not in args or args.prot_proj == "avg":
             nn.init.xavier_normal_(self.target_projector[0][1].weight)
 
         if self.classify:
@@ -312,7 +311,7 @@ class DrugTargetCoembeddingLightning(pl.LightningModule):
             loss = self.contrastive_step(batch)
             self.manual_backward(loss)
             con_opt.step()
-            self.log("train/contrastive_loss", loss)
+            self.log("train/contrastive_loss", loss, sync_dist=True if self.trainer.num_devices > 1 else False)
         else:
             if self.contrastive:
                 opt, _ = self.optimizers()
@@ -322,7 +321,7 @@ class DrugTargetCoembeddingLightning(pl.LightningModule):
             loss = self.non_contrastive_step(batch)
             self.manual_backward(loss)
             opt.step()
-            self.log("train/loss", loss)
+            self.log("train/loss", loss, sync_dist=True if self.trainer.num_devices > 1 else False)
 
         return loss
 
@@ -331,18 +330,18 @@ class DrugTargetCoembeddingLightning(pl.LightningModule):
         if self.contrastive:
             if self.current_epoch % 2 == 0: # supervised learning epoch
                 sch[0].step()
-                self.log("train/lr", sch[0].get_lr()[0])
+                self.log("train/lr", sch[0].get_lr()[0], sync_dist=True if self.trainer.num_devices > 1 else False)
             else: # contrastive learning epoch
                 sch[1].step()
                 self.contrastive_loss_fct.step()
-                self.log("train/triplet_margin", self.contrastive_loss_fct.margin)
-                self.log("train/contrastive_lr", sch[1].get_lr()[0])
+                self.log("train/triplet_margin", self.contrastive_loss_fct.margin, sync_dist=True if self.trainer.num_devices > 1 else False)
+                self.log("train/contrastive_lr", sch[1].get_lr()[0], sync_dist=True if self.trainer.num_devices > 1 else False)
         else:
-            self.log("train/lr", sch.get_lr()[0])
+            self.log("train/lr", sch.get_lr()[0], sync_dist=True if self.trainer.num_devices > 1 else False)
             sch.step()
 
     def validation_step(self, batch, batch_idx):
-        if self.global_step == 0 and not self.args.no_wandb:
+        if self.global_step == 0 and self.global_rank == 0 and not self.args.no_wandb:
             wandb.define_metric("val/aupr", summary="max")
         drug, protein, label = batch
         similarity = self.forward(drug, protein)
@@ -351,7 +350,7 @@ class DrugTargetCoembeddingLightning(pl.LightningModule):
             similarity = torch.squeeze(F.sigmoid(similarity))
 
         loss = self.loss_fct(similarity, label)
-        self.log("val/loss", loss)
+        self.log("val/loss", loss, sync_dist=True if self.trainer.num_devices > 1 else False)
 
         self.val_step_outputs.extend(similarity)
         self.val_step_targets.extend(label)
@@ -364,7 +363,7 @@ class DrugTargetCoembeddingLightning(pl.LightningModule):
                 metric(torch.Tensor(self.val_step_outputs), torch.Tensor(self.val_step_targets).to(torch.int))
             else:
                 metric(torch.Tensor(self.val_step_outputs).cuda(), torch.Tensor(self.val_step_targets).to(torch.float).cuda())
-            self.log(f"val/{name}", metric, on_step=False, on_epoch=True)
+            self.log(f"val/{name}", metric, on_step=False, on_epoch=True, sync_dist=True if self.trainer.num_devices > 1 else False)
 
         self.val_step_outputs.clear()
         self.val_step_targets.clear()
@@ -387,7 +386,7 @@ class DrugTargetCoembeddingLightning(pl.LightningModule):
                 metric(torch.Tensor(self.test_step_outputs), torch.Tensor(self.test_step_targets).to(torch.int))
             else:
                 metric(torch.Tensor(self.test_step_outputs).cuda(), torch.Tensor(self.test_step_targets).to(torch.float).cuda())
-            self.log(f"test/{name}", metric, on_step=False, on_epoch=True)
+            self.log(f"test/{name}", metric, on_step=False, on_epoch=True, sync_dist=True if self.trainer.num_devices > 1 else False)
 
         self.test_step_outputs.clear()
         self.test_step_targets.clear()

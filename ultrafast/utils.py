@@ -1,4 +1,4 @@
-import featurizers
+from ultrafast import featurizers
 from rdkit import Chem
 from torch.nn.init import xavier_normal_
 
