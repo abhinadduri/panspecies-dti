@@ -6,7 +6,10 @@ build-backend = "setuptools.build_meta"
 name = "ultrafast"
 version = "0.1.0"
 description = "Ultra-high-throughput Virtual Screening"
-authors = [{ name = "Caleb Ellington", email = "cellingt@andrew.cmu.edu" }]
+authors = [{ name = "Caleb Ellington", email = "cellingt@andrew.cmu.edu" },
+           { name = "Andrew McNutt"},
+           { name = "Abhinav Adduri"},
+           { name = "Monica Dayao"}]
 dependencies = [
     "lightning==2.4.0",
     "torch==2.4.0",
