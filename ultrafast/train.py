@@ -253,6 +253,8 @@ def train(
 if __name__ == '__main__':
     train()
 =======
+=======
+>>>>>>> dafc19067aab1fd89577c9871805c11e76e9b5d1
 from model import DrugTargetCoembeddingLightning
 from trainloop import ConPlexEpochLoop
 from utils import get_featurizer, xavier_normal
@@ -440,4 +442,7 @@ if not config.no_wandb:
 # Test model using best weights
 trainer.test(datamodule=datamodule, ckpt_path=checkpoint_callback.best_model_path)
 
+<<<<<<< HEAD
 >>>>>>> dafc190 (dealing with issues)
+=======
+>>>>>>> dafc19067aab1fd89577c9871805c11e76e9b5d1
