@@ -11,7 +11,7 @@ authors = [{ name = "Caleb Ellington", email = "cellingt@andrew.cmu.edu" },
            { name = "Abhinav Adduri"},
            { name = "Monica Dayao"}]
 dependencies = [
-    "lightning==2.4.0",
+    "lightning==2.0.8",
     "torch==2.4.0",
     "pandas==2.2.2",
     "wandb==0.17.8",

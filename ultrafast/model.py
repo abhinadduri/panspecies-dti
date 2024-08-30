@@ -169,7 +169,6 @@ class DrugTargetCoembeddingLightning(pl.LightningModule):
         dropout=0,
         lr=1e-4,
         contrastive=False,
-        device='cpu',
         args=None,
     ):
         super().__init__()
@@ -183,7 +182,6 @@ class DrugTargetCoembeddingLightning(pl.LightningModule):
         self.classify = classify
         self.contrastive = contrastive
         self.args = args
-        self.device_ = device
 
         if args.drug_layers == 1:
             self.drug_projector = nn.Sequential(
@@ -313,7 +311,7 @@ class DrugTargetCoembeddingLightning(pl.LightningModule):
             loss = self.contrastive_step(batch)
             self.manual_backward(loss)
             con_opt.step()
-            self.log("train/contrastive_loss", loss)
+            self.log("train/contrastive_loss", loss, sync_dist=True if self.trainer.num_devices > 1 else False)
         else:
             if self.contrastive:
                 opt, _ = self.optimizers()
@@ -323,7 +321,7 @@ class DrugTargetCoembeddingLightning(pl.LightningModule):
             loss = self.non_contrastive_step(batch)
             self.manual_backward(loss)
             opt.step()
-            self.log("train/loss", loss)
+            self.log("train/loss", loss, sync_dist=True if self.trainer.num_devices > 1 else False)
 
         return loss
 
@@ -332,18 +330,18 @@ class DrugTargetCoembeddingLightning(pl.LightningModule):
         if self.contrastive:
             if self.current_epoch % 2 == 0: # supervised learning epoch
                 sch[0].step()
-                self.log("train/lr", sch[0].get_lr()[0])
+                self.log("train/lr", sch[0].get_lr()[0], sync_dist=True if self.trainer.num_devices > 1 else False)
             else: # contrastive learning epoch
                 sch[1].step()
                 self.contrastive_loss_fct.step()
-                self.log("train/triplet_margin", self.contrastive_loss_fct.margin)
-                self.log("train/contrastive_lr", sch[1].get_lr()[0])
+                self.log("train/triplet_margin", self.contrastive_loss_fct.margin, sync_dist=True if self.trainer.num_devices > 1 else False)
+                self.log("train/contrastive_lr", sch[1].get_lr()[0], sync_dist=True if self.trainer.num_devices > 1 else False)
         else:
-            self.log("train/lr", sch.get_lr()[0])
+            self.log("train/lr", sch.get_lr()[0], sync_dist=True if self.trainer.num_devices > 1 else False)
             sch.step()
 
     def validation_step(self, batch, batch_idx):
-        if self.global_step == 0 and not self.args.no_wandb:
+        if self.global_step == 0 and self.global_rank == 0 and not self.args.no_wandb:
             wandb.define_metric("val/aupr", summary="max")
         drug, protein, label = batch
         similarity = self.forward(drug, protein)
@@ -352,7 +350,7 @@ class DrugTargetCoembeddingLightning(pl.LightningModule):
             similarity = torch.squeeze(F.sigmoid(similarity))
 
         loss = self.loss_fct(similarity, label)
-        self.log("val/loss", loss)
+        self.log("val/loss", loss, sync_dist=True if self.trainer.num_devices > 1 else False)
 
         self.val_step_outputs.extend(similarity)
         self.val_step_targets.extend(label)
@@ -365,7 +363,7 @@ class DrugTargetCoembeddingLightning(pl.LightningModule):
                 metric(torch.Tensor(self.val_step_outputs), torch.Tensor(self.val_step_targets).to(torch.int))
             else:
                 metric(torch.Tensor(self.val_step_outputs).cuda(), torch.Tensor(self.val_step_targets).to(torch.float).cuda())
-            self.log(f"val/{name}", metric, on_step=False, on_epoch=True)
+            self.log(f"val/{name}", metric, on_step=False, on_epoch=True, sync_dist=True if self.trainer.num_devices > 1 else False)
 
         self.val_step_outputs.clear()
         self.val_step_targets.clear()
@@ -388,7 +386,7 @@ class DrugTargetCoembeddingLightning(pl.LightningModule):
                 metric(torch.Tensor(self.test_step_outputs), torch.Tensor(self.test_step_targets).to(torch.int))
             else:
                 metric(torch.Tensor(self.test_step_outputs).cuda(), torch.Tensor(self.test_step_targets).to(torch.float).cuda())
-            self.log(f"test/{name}", metric, on_step=False, on_epoch=True)
+            self.log(f"test/{name}", metric, on_step=False, on_epoch=True, sync_dist=True if self.trainer.num_devices > 1 else False)
 
         self.test_step_outputs.clear()
         self.test_step_targets.clear()

@@ -112,7 +112,6 @@ def train(
     config.update(args_overrides)
 
     save_dir = f'{config.get("model_save_dir", ".")}/{config.experiment_id}'
-    os.makedirs(save_dir, exist_ok=True)
 
     # Set CUDA device
     device_no = config.device
@@ -221,16 +220,17 @@ def train(
             contrastive=config.contrastive,
             num_layers_target=config.num_layers_target,
             dropout=config.dropout,
-            device=device,
             args=config
         )
 
     if not config.no_wandb:
-        wandb_logger = WandbLogger(project=config.wandb_proj, log_model="gradients")
+        wandb_logger = WandbLogger(project=config.wandb_proj, log_model=True)
         wandb_logger.watch(model)
-        wandb_logger.experiment.config.update(OmegaConf.to_container(config, resolve=True, throw_on_missing=True))
+        if hasattr(wandb_logger.experiment.config, 'update'):
+            wandb_logger.experiment.config.update(OmegaConf.to_container(config, resolve=True, throw_on_missing=True))
 
-    checkpoint_callback = pl.callbacks.ModelCheckpoint(monitor=config.watch_metric, mode="max", filename=config.task, verbose=True)
+    checkpoint_callback = pl.callbacks.ModelCheckpoint(monitor=config.watch_metric, mode="max", filename=config.task,
+                                                       dirpath=save_dir, verbose=True)
     # Train model
     trainer = pl.Trainer(
             accelerator="auto",
@@ -244,8 +244,6 @@ def train(
             model,
             datamodule=datamodule,
             )
-
-    wandb.save(f'{config.task}.ckpt')
 
     # Test model using best weights
     trainer.test(datamodule=datamodule, ckpt_path=checkpoint_callback.best_model_path)
