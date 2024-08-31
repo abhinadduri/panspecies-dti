@@ -7,7 +7,6 @@ import typing as T
 import datamol as dm
 import esm
 import requests
-from saprot_utils import load_esm_saprot
 
 from molfeat.trans.pretrained.hf_transformers import PretrainedHFTransformer
 from pathlib import Path
@@ -19,6 +18,7 @@ from rdkit.Chem import AllChem
 from rdkit import DataStructs
 from rdkit.Chem.rdmolops import RDKFingerprint
 from ultrafast.utils import canonicalize
+from ultrafast.saprot_utils import load_esm_saprot
 
 def sanitize_string(s):
     return str(s).replace("/", "|")
@@ -64,8 +64,8 @@ class Featurizer:
                     print(self._device)
             else:
                 self._cuda_registry[k] = (f(v, self._device), f)
-        for k, v in self._features.items():
-            self._features[k] = v.to(device)
+        # for k, v in self._features.items():
+        #     self._features[k] = v.to(device)
 
     @lru_cache(maxsize=5000)
     def transform(self, seq: str) -> torch.Tensor:
@@ -168,8 +168,6 @@ class Featurizer:
                         else:
                             feats = self.transform(seq)
 
-                        if self._on_cuda:
-                            feats = feats.to(self.device)
 
                         self._features[seq] = feats
             elif str(self._save_path).endswith('.pt'):
@@ -179,8 +177,6 @@ class Featurizer:
             for seq in tqdm(seq_list, disable=not verbose, desc=self.name):
                 feats = self.transform(seq)
 
-                if self._on_cuda:
-                    feats = feats.to(self.device)
 
                 self._features[seq] = feats
             self._preloaded = True
@@ -188,8 +184,6 @@ class Featurizer:
         # seqs_sanitized = [sanitize_string(s) for s in seq_list]
         # feat_dict = load_hdf5_parallel(self._save_path, seqs_sanitized,n_jobs=32)
         # self._features.update(feat_dict)
-
-        self._update_device(self.device)
 
 class ChemGPTFeaturizer(Featurizer):
     def __init__(self, shape: int = 768, save_dir: Path = Path().absolute(), ext: str = "h5"):

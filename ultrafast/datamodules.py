@@ -722,7 +722,6 @@ class DUDEDataModule(pl.LightningDataModule):
             target_featurizer: Featurizer,
             contrastive_type: str = "default",
             device: torch.device = torch.device("cpu"),
-            contrastive_type: str = "default",
             n_neg_per: int = 50,
             batch_size: int = 32,
             shuffle: bool = True,
