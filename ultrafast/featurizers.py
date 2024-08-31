@@ -6,6 +6,7 @@ import numpy as np
 import typing as T
 import datamol as dm
 import esm
+import requests
 
 from molfeat.trans.pretrained.hf_transformers import PretrainedHFTransformer
 from pathlib import Path
@@ -17,9 +18,10 @@ from rdkit.Chem import AllChem
 from rdkit import DataStructs
 from rdkit.Chem.rdmolops import RDKFingerprint
 from ultrafast.utils import canonicalize
+from ultrafast.saprot_utils import load_esm_saprot
 
 def sanitize_string(s):
-    return s.replace("/", "|")
+    return str(s).replace("/", "|")
 
 class Featurizer:
     def __init__(self, name: str, shape: int, save_dir: Path=Path().absolute(), ext: str="h5"):
@@ -62,8 +64,8 @@ class Featurizer:
                     print(self._device)
             else:
                 self._cuda_registry[k] = (f(v, self._device), f)
-        for k, v in self._features.items():
-            self._features[k] = v.to(device)
+        # for k, v in self._features.items():
+        #     self._features[k] = v.to(device)
 
     @lru_cache(maxsize=5000)
     def transform(self, seq: str) -> torch.Tensor:
@@ -166,8 +168,6 @@ class Featurizer:
                         else:
                             feats = self.transform(seq)
 
-                        if self._on_cuda:
-                            feats = feats.to(self.device)
 
                         self._features[seq] = feats
             elif str(self._save_path).endswith('.pt'):
@@ -177,8 +177,6 @@ class Featurizer:
             for seq in tqdm(seq_list, disable=not verbose, desc=self.name):
                 feats = self.transform(seq)
 
-                if self._on_cuda:
-                    feats = feats.to(self.device)
 
                 self._features[seq] = feats
             self._preloaded = True
@@ -186,8 +184,6 @@ class Featurizer:
         # seqs_sanitized = [sanitize_string(s) for s in seq_list]
         # feat_dict = load_hdf5_parallel(self._save_path, seqs_sanitized,n_jobs=32)
         # self._features.update(feat_dict)
-
-        self._update_device(self.device)
 
 class ChemGPTFeaturizer(Featurizer):
     def __init__(self, shape: int = 768, save_dir: Path = Path().absolute(), ext: str = "h5"):
@@ -428,6 +424,75 @@ class ESM2Featurizer(Featurizer):
         with h5py.File(out_path, "a") as h5fi:
             for seq in tqdm(seq_list, disable=not verbose, desc=self.name):
                 seq_h5 = self.sanitize_string(seq)
+                if seq_h5 in h5fi:
+                    print(f"{seq} already in h5file")
+                    continue
+                try:
+                    feats = self.transform(seq)
+                    dset = h5fi.require_dataset(seq_h5, feats.shape, np.float32)
+                    dset[:] = feats.cpu().numpy()
+                except Exception as e:
+                    print(f"Error processing {seq}: {e}")
+
+    @staticmethod
+    def sanitize_string(s):
+        return ''.join(c if c.isalnum() else '_' for c in s)
+
+# SaProt Featurizer
+class SaProtFeaturizer(Featurizer):
+    def __init__(self, shape: int = 1280, save_dir: Path = Path().absolute(), ext: str = "h5"):
+        super().__init__("SaProt", shape, save_dir, ext)
+        
+        # Load SaProt model
+        model_path = "SaProt_650M_AF2.pt"
+        if not Path(model_path).exists():
+            # download the model file from the following link https://huggingface.co/westlake-repl/SaProt_650M_AF2/resolve/main/SaProt_650M_AF2.pt?download=true
+            print("Downloading SaProt model...")
+            response = requests.get("https://huggingface.co/westlake-repl/SaProt_650M_AF2/resolve/main/SaProt_650M_AF2.pt?download=true", model_path)  # download the model file
+            with open(model_path, "wb") as f:
+                f.write(response.content)
+
+            
+        self.model, self.alphabet = load_esm_saprot(model_path)
+        self.batch_converter = self.alphabet.get_batch_converter()
+        
+        # Move model to GPU if available
+        self.device_ = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.model = self.model.to(self.device_)
+        self.model.eval()  # Set the model to evaluation mode
+
+    def _transform(self, seq: str) -> torch.Tensor:
+        try:
+            data = [("protein", seq)]
+            batch_labels, batch_strs, batch_tokens = self.batch_converter(data)
+            batch_tokens = batch_tokens.to(self.device)
+
+            with torch.no_grad():
+                results = self.model(batch_tokens, repr_layers=[33], return_contacts=False)
+            token_embeddings = results["representations"][33]
+
+            # Return the full sequence of embeddings instead of just the CLS token
+            return token_embeddings[0, 1:].squeeze(0)  # This will be a 2D tensor (sequence length, feature dimension)
+
+        except Exception as e:
+            print(f"Error featurizing sequence: {e}")
+            return torch.zeros((1, self.shape), device=self.device)
+        
+    def write_to_disk(self, seq_list: List[str], verbose: bool = True, file_path: Path = None) -> None:
+        if file_path is not None:
+            out_path = file_path
+        else:
+            out_path = self._save_path
+
+        print(f"Writing {self.name} features to {out_path}")
+        
+        with h5py.File(out_path, "a") as h5fi:
+            for seq in tqdm(seq_list, disable=not verbose, desc=self.name):
+                try:
+                    seq_h5 = self.sanitize_string(seq)
+                except Exception as e:
+                    print(f"Error processing {seq}: e")
+                    continue
                 if seq_h5 in h5fi:
                     print(f"{seq} already in h5file")
                     continue
