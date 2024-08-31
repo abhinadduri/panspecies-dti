@@ -20,7 +20,7 @@ dependencies = [
     "PyTDC==1.0.6",
     "rdkit==2023.9.5",
     "datamol==0.12.5",
-    "esm==3.0.3",
+    "fair-esm==2.0.0",
     "molfeat==0.10.1",
     "transformers==4.30.2",
 ]
