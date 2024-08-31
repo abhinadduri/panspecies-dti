@@ -204,14 +204,12 @@ class EmbedDataset(Dataset):
         self,
         data_file: str,
         moltype: str,
-        drug_featurizer: Featurizer,
-        target_featurizer: Featurizer,
+        featurizer: Featurizer,
     ):
         self.data = pd.read_table(data_file, header=0, sep=None)
         self.moltype = moltype
 
-        self.drug_featurizer = drug_featurizer
-        self.target_featurizer = target_featurizer
+        self.featurizer = featurizer
 
         self._column = "SMILES" if self.moltype == "drug" else "Target Sequence"
 
@@ -219,10 +217,7 @@ class EmbedDataset(Dataset):
         return len(self.data)
 
     def __getitem__(self, i):
-        if self.moltype == "drug":
-            mol = self.drug_featurizer(self.data[self._column].iloc[i])
-        elif self.moltype == "target":
-            mol = self.target_featurizer(self.data[self._column].iloc[i])
+        mol = self.featurizer(self.data[self._column].iloc[i])
 
         return mol
 

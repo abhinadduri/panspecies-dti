@@ -46,10 +46,13 @@ def embed(
     device = torch.device(f"cuda:{device}") if use_cuda else torch.device("cpu")
     model.to(device)
     
-    drug_featurizer = get_featurizer(model.args.drug_featurizer)
-    target_featurizer = get_featurizer(model.args.target_featurizer)
+    if args.moltype == "drug":
+        featurizer = get_featurizer(model.args.drug_featurizer)
+    elif args.moltype == "target":
+        featurizer = get_featurizer(model.args.target_featurizer)
+    featurizer = featurizer.to(device)
 
-    dataset = EmbedDataset(args.data_file, args.moltype, drug_featurizer, target_featurizer)
+    dataset = EmbedDataset(args.data_file, args.moltype, featurizer)
 
     collate_fn = partial(embed_collate_fn, moltype=args.moltype)
     dataloader = DataLoader(dataset, batch_size=args.batch_size, shuffle=False, collate_fn=collate_fn)
