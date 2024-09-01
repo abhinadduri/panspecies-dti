@@ -2,29 +2,47 @@ from __future__ import annotations
 
 import h5py
 import torch
+import multiprocessing
 import numpy as np
 import typing as T
 import datamol as dm
 import esm
 import requests
 
+from functools import partial
 from molfeat.trans.pretrained.hf_transformers import PretrainedHFTransformer
 from pathlib import Path
-from functools import lru_cache
 from tqdm import tqdm
 from transformers import AutoTokenizer, AutoModel, pipeline
 from rdkit import Chem
 from rdkit.Chem import AllChem
 from rdkit import DataStructs
 from rdkit.Chem.rdmolops import RDKFingerprint
+from rdkit.Chem import rdFingerprintGenerator
 from ultrafast.utils import canonicalize
 from ultrafast.saprot_utils import load_esm_saprot
 
 def sanitize_string(s):
-    return str(s).replace("/", "|")
+    if isinstance(s, str):
+        return s.replace("/", "|")
+    elif pd.isna(s):
+        return "NA"
+    else:
+        return str(s).replace("/", "|")
+
+def batched(iterable, batch_size):
+    """A simple batching function using only standard Python."""
+    batch = []
+    for item in iterable:
+        batch.append(item)
+        if len(batch) == batch_size:
+            yield batch
+            batch = []
+    if batch:  # Don't forget the last batch if it's not full
+        yield batch
 
 class Featurizer:
-    def __init__(self, name: str, shape: int, save_dir: Path=Path().absolute(), ext: str="h5"):
+    def __init__(self, name: str, shape: int, save_dir: Path=Path().absolute(), ext: str="h5", batch_size: int = 32):
         self._name = name
         self._shape = shape
         self._save_path = save_dir / Path(f"{self._name}_features.{ext}")
@@ -35,6 +53,8 @@ class Featurizer:
         self._on_cuda = False
         self._features = {}
         self._file_dir = None
+
+        self._batch_size = batch_size
 
     def __call__(self, seq: str) -> torch.Tensor:
         if seq not in self.features:
@@ -48,7 +68,7 @@ class Featurizer:
         """
         self._cuda_registry[k] = (v, f)
 
-    def _transform(self, seq: str) -> torch.Tensor:
+    def _transform(self, seq: List[str]) -> torch.Tensor:
         raise NotImplementedError
 
     def _update_device(self, device: torch.device):
@@ -64,15 +84,10 @@ class Featurizer:
                     print(self._device)
             else:
                 self._cuda_registry[k] = (f(v, self._device), f)
-        # for k, v in self._features.items():
-        #     self._features[k] = v.to(device)
 
-    @lru_cache(maxsize=5000)
-    def transform(self, seq: str) -> torch.Tensor:
+    def transform(self, seq_batch: List[str]) -> torch.Tensor:
         with torch.set_grad_enabled(False):
-            feats = self._transform(seq)
-            if self._on_cuda:
-                feats = feats.to(self.device)
+            feats = self._transform(seq_batch)
             return feats
 
     @property
@@ -129,21 +144,35 @@ class Featurizer:
         else:
             out_path = self._save_path
 
+        print(f"Writing {self.name} features to {out_path}")
+        batch_size = self._batch_size
+        total_seqs = len(seq_list)
+
         if str(out_path).endswith('.h5'):
-            print(f"Writing {self.name} features to {out_path}")
             with h5py.File(out_path, "a") as h5fi:
-                for seq in tqdm(seq_list, disable=not verbose, desc=self.name):
-                    seq_h5 = sanitize_string(seq)
-                    if seq_h5 in h5fi:
-                        print(f"{seq} already in h5file")
-                    feats = self.transform(seq)
-                    dset = h5fi.require_dataset(seq_h5, feats.shape, np.float32)
-                    dset[:] = feats.cpu().numpy()
+                with tqdm(total=total_seqs, desc=self.name) as pbar:
+                    for batch in batched(seq_list, batch_size):
+                        batch_results = self.transform(batch)
+
+                        for seq, feats in zip(batch, batch_results):
+                            seq_h5 = sanitize_string(seq)
+                            if seq_h5 in h5fi:
+                                continue
+                            dset = h5fi.require_dataset(seq_h5, feats.shape, np.float32)
+                            dset[:] = feats.cpu().numpy()
+                        pbar.update(batch_size)
+
         elif str(out_path).endswith('.pt'):
             features = {}
             seq_set = set(seq_list)
-            for seq in tqdm(seq_set, disable=not verbose, desc=self.name):
-                features[seq] = self.transform(seq)
+            with tqdm(total=total_seqs, desc=self.name) as pbar:
+                for batch in batched(seq_list, batch_size):
+                    batch_results = self.transform(batch)
+
+                    for seq, feats in zip(batch, batch_results):
+                        features[seq] = self.transform(seq)
+                    pbar.update(batch_size)
+
             torch.save(features,out_path)
 
     def preload(
@@ -181,17 +210,12 @@ class Featurizer:
                 self._features[seq] = feats
             self._preloaded = True
 
-        # seqs_sanitized = [sanitize_string(s) for s in seq_list]
-        # feat_dict = load_hdf5_parallel(self._save_path, seqs_sanitized,n_jobs=32)
-        # self._features.update(feat_dict)
-
 class ChemGPTFeaturizer(Featurizer):
-    def __init__(self, shape: int = 768, save_dir: Path = Path().absolute(), ext: str = "h5"):
-        super().__init__("RoBertaZinc", shape, save_dir, ext)
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        self.transformer = PretrainedHFTransformer(kind='Roberta-Zinc480M-102M', notation='selfies', dtype=float, device=device)
+    def __init__(self, shape: int = 768, save_dir: Path = Path().absolute(), ext: str = "h5", batch_size: int = 32):
+        super().__init__("RoBertaZinc", shape, save_dir, ext, batch_size)
+        self.transformer = PretrainedHFTransformer(kind='Roberta-Zinc480M-102M', notation='selfies', dtype=float, device=self._device)
 
-    def _transform(self, smile: str) -> torch.Tensor:
+    def _transform_single(self, smile: str) -> torch.Tensor:
         try:
             mol = dm.to_mol(smile)
             if mol is None:
@@ -202,26 +226,33 @@ class ChemGPTFeaturizer(Featurizer):
             print(f"Error featurizing SMILES {smile}: {e}")
             return torch.zeros(self.shape)
 
-    def write_to_disk(self, seq_list: List[str], verbose: bool = True, file_path: Path = None) -> None:
-        if file_path is not None:
-            out_path = file_path
-        else:
-            out_path = self._save_path
-
-        print(f"Writing {self.name} features to {out_path}")
-        
-        with h5py.File(out_path, "a") as h5fi:
-            for seq in tqdm(seq_list, disable=not verbose, desc=self.name):
-                seq_h5 = sanitize_string(seq)
-                if seq_h5 in h5fi:
-                    logger.info(f"{seq} already in h5file")
-                    continue
-                try:
-                    feats = self.transform(seq)
-                    dset = h5fi.require_dataset(seq_h5, feats.shape, np.float32)
-                    dset[:] = feats.cpu().numpy()
-                except Exception as e:
-                    logger.error(f"Error processing {seq}: {e}")
+    def _transform(self, batch_smiles: List[str]) -> torch.Tensor:
+        try:
+            mols = [dm.to_mol(smile) for smile in batch_smiles]
+            invalid_indices = [i for i, mol in enumerate(mols) if mol is None]
+            
+            if invalid_indices:
+                print(f"Invalid SMILES at indices: {invalid_indices}")
+                for idx in invalid_indices:
+                    mols[idx] = dm.to_mol("")  # Empty molecule as placeholder
+            
+            features = self.transformer(batch_smiles)
+            features = torch.from_numpy(features).float()
+            
+            # Replace features for invalid SMILES with zero vectors
+            for idx in invalid_indices:
+                features[idx] = torch.zeros(self.shape)
+            
+            return features
+        except RuntimeError as e:
+            if "CUDA out of memory" in str(e):
+                print("CUDA out of memory during batch processing. Falling back to sequential processing.")
+                return torch.stack([self._transform_single(smile) for smile in batch_smiles])
+            else:
+                raise e
+        except Exception as e:
+            print(f"Error during batch featurization: {e}")
+            return torch.stack([self._transform_single(smile) for smile in batch_smiles])
 
 class MorganFeaturizer(Featurizer):
     def __init__(
@@ -230,10 +261,15 @@ class MorganFeaturizer(Featurizer):
         radius: int = 2,
         save_dir: Path = Path().absolute(),
         ext: str = "h5",
+        batch_size: int = 2048,
+        n_jobs: int = -1,
     ):
-        super().__init__("Morgan", shape, save_dir, ext)
+        super().__init__("Morgan", shape, save_dir, ext, batch_size)
 
         self._radius = radius
+        # number of CPU workers to convert molecules to morgan fingerprints
+        self.n_jobs = n_jobs if n_jobs > 0 else multiprocessing.cpu_count()
+        print(f"Setup morgan featurizer with {self.n_jobs} workers")
 
     def smiles_to_morgan(self, smile: str):
         """
@@ -243,12 +279,18 @@ class MorganFeaturizer(Featurizer):
         :return: Morgan fingerprint
         :rtype: np.ndarray
         """
+        if not isinstance(smile, str):
+            if pd.isna(smile):
+                print(f"Invalid SMILES: NaN")
+                return np.zeros((self.shape,))
+            else:
+                smile = str(smile)
+
+        fpgen = rdFingerprintGenerator.GetMorganGenerator(radius=self._radius,fpSize=self.shape)
         try:
             smile = canonicalize(smile)
             mol = Chem.MolFromSmiles(smile)
-            features_vec = AllChem.GetMorganFingerprintAsBitVect(
-                mol, self._radius, nBits=self.shape
-            )
+            features_vec = fpgen.GetFingerprint(mol)
             features = np.zeros((1,))
             DataStructs.ConvertToNumpyArray(features_vec, features)
         except Exception as e:
@@ -257,68 +299,16 @@ class MorganFeaturizer(Featurizer):
             features = np.zeros((self.shape,))
         return features
 
-    def _transform(self, smile: str) -> torch.Tensor:
-        # feats = torch.from_numpy(self._featurizer(smile)).squeeze().float()
-        feats = (
-            torch.from_numpy(self.smiles_to_morgan(smile)).squeeze().float()
-        )
-        if feats.shape[0] != self.shape:
-            print("Failed to featurize: appending zero vector")
-            feats = torch.zeros(self.shape)
-        return feats
+    def _transform(self, batch_smiles: List[str]) -> torch.Tensor:
+        with multiprocessing.Pool(processes=self.n_jobs) as pool:
+            smiles_to_morgan_partial = partial(self.smiles_to_morgan)
+            all_feats = pool.map(smiles_to_morgan_partial, batch_smiles)
 
-class ChemGPTAndFptFeaturizer(Featurizer):
-    def __init__(self, chemgpt_shape: int = 256, fp_shape: int = 2048, fp_radius: int = 2, save_dir: Path = Path().absolute(), ext: str = "h5"):
-        total_shape = chemgpt_shape + fp_shape
-        super().__init__("ChemGPTAndFpt", total_shape, save_dir, ext)
-        self.chemgpt_shape = chemgpt_shape
-        self.fp_shape = fp_shape
-        self.fp_radius = fp_radius
-        self.transformer = PretrainedHFTransformer(kind='ChemGPT-19M', notation='selfies', dtype=float)
-
-    def _transform(self, smile: str) -> torch.Tensor:
-        try:
-            # ChemGPT features
-            mol = dm.to_mol(smile)
-            if mol is None:
-                raise ValueError(f"Invalid SMILES: {smile}")
-            chemgpt_features = self.transformer([smile])
-            chemgpt_tensor = torch.from_numpy(chemgpt_features[0]).float()
-
-            # Morgan fingerprint features
-            mol = Chem.MolFromSmiles(smile)
-            fp_vec = AllChem.GetMorganFingerprintAsBitVect(mol, self.fp_radius, nBits=self.fp_shape)
-            fp_array = np.zeros((1,))
-            DataStructs.ConvertToNumpyArray(fp_vec, fp_array)
-            fp_tensor = torch.from_numpy(fp_array).float()
-
-            # Concatenate features
-            return torch.cat([chemgpt_tensor, fp_tensor])
-
-        except Exception as e:
-            print(f"Error featurizing SMILES {smile}: {e}")
-            return torch.zeros(self.shape)
-
-    def write_to_disk(self, seq_list: List[str], verbose: bool = True, file_path: Path = None) -> None:
-        if file_path is not None:
-            out_path = file_path
-        else:
-            out_path = self._save_path
-
-        print(f"Writing {self.name} features to {out_path}")
-        
-        with h5py.File(out_path, "a") as h5fi:
-            for seq in tqdm(seq_list, disable=not verbose, desc=self.name):
-                seq_h5 = sanitize_string(seq)
-                if seq_h5 in h5fi:
-                    print(f"{seq} already in h5file")
-                    continue
-                try:
-                    feats = self.transform(seq)
-                    dset = h5fi.require_dataset(seq_h5, feats.shape, np.float32)
-                    dset[:] = feats.cpu().numpy()
-                except Exception as e:
-                    print(f"Error processing {seq}: {e}")
+            all_feats = [
+                torch.from_numpy(feat).squeeze().float() if feat.shape[0] == self.shape \
+                        else torch.zeros(self.shape) for feat in all_feats
+            ]
+            return torch.stack(all_feats, dim=0)
 
 class ProtBertFeaturizer(Featurizer):
     def __init__(self, save_dir: Path = Path().absolute(), per_tok=False):
@@ -367,80 +357,96 @@ class ProtBertFeaturizer(Featurizer):
     def _space_sequence(self, x):
         return " ".join(list(x))
 
-    def _transform(self, seq: str):
-        if len(seq) > self._max_len - 2:
-            seq = seq[: self._max_len - 2]
+    def _transform(self, seqs: List[str]):
+        max_seq_len = self._max_len - 2
+        # Truncate sequences if necessary
+        seqs = [seq[:max_seq_len] for seq in seqs]
 
-        embedding = torch.tensor(self._cuda_registry["featurizer"][0](self._space_sequence(seq)))
-        seq_len = len(seq)
-        start_Idx = 1
-        end_Idx = seq_len + 1
-        feats = embedding.squeeze()[start_Idx:end_Idx]
+        # Apply space_sequence to all sequences in the batch
+        spaced_seqs = [self._space_sequence(seq) for seq in seqs]
+        ids = self._protbert_tokenizer(spaced_seqs, padding=True, return_tensors="pt")
+        input_ids = torch.tensor(ids['input_ids']).to(self._device)
+        attention_mask = torch.tensor(ids['attention_mask']).to(self._device)
 
-        if self.per_tok:
-            return feats
+        embeddings = self._protbert_model(input_ids=input_ids, attention_mask=attention_mask)
+        embeddings = embeddings.last_hidden_state.detach().cpu()
 
-        # return the entire embedding
-        return feats
+        results = []
+        for i, seq in enumerate(seqs):
+            seq_len = len(seq)
+            start_idx = 1
+            end_idx = seq_len + 1
+            feats = embeddings[i].squeeze()[start_idx:end_idx]
+            
+            results.append(feats)
+
+        return results
 
 class ESM2Featurizer(Featurizer):
-    def __init__(self, shape: int = 1280, save_dir: Path = Path().absolute(), ext: str = "h5"):
-        super().__init__("ESM2", shape, save_dir, ext)
+    def __init__(self, shape: int = 1280, save_dir: Path = Path().absolute(), ext: str = "h5", batch_size: int = 16):
+        super().__init__("ESM2", shape, save_dir, ext, batch_size)
+
+        print(f"Using ESM2 featurizer with {self._batch_size} batches")
         
         # Load ESM-2 model
         self.model, self.alphabet = esm.pretrained.esm2_t33_650M_UR50D()
         self.batch_converter = self.alphabet.get_batch_converter()
+
+        # overload default of CPU
+        self._device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
         
         # Move model to GPU if available
-        self.device_ = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        self.model = self.model.to(self.device_)
+        self.model = self.model.to(self._device)
         self.model.eval()  # Set the model to evaluation mode
 
-    def _transform(self, seq: str) -> torch.Tensor:
+    def _transform_single(self, seq: str) -> torch.Tensor:
         try:
             data = [("protein", seq)]
-            batch_labels, batch_strs, batch_tokens = self.batch_converter(data)
-            batch_tokens = batch_tokens.to(self.device)
+            _, _, batch_tokens = self.batch_converter(data)
+            batch_tokens = batch_tokens.to(self._device)
 
             with torch.no_grad():
                 results = self.model(batch_tokens, repr_layers=[33], return_contacts=False)
-            token_embeddings = results["representations"][33]
+            token_embeddings = results["representations"][33].detach().cpu()
 
-            # Return the full sequence of embeddings instead of just the CLS token
-            return token_embeddings[0, 1:].squeeze(0)  # This will be a 2D tensor (sequence length, feature dimension)
-
+            return token_embeddings[0, 1:].squeeze(0)  # Return the full sequence embedding
         except Exception as e:
-            print(f"Error featurizing sequence: {e}")
-            return torch.zeros((1, self.shape), device=self.device)
-        
-    def write_to_disk(self, seq_list: List[str], verbose: bool = True, file_path: Path = None) -> None:
-        if file_path is not None:
-            out_path = file_path
-        else:
-            out_path = self._save_path
+            print(f"Error featurizing single sequence: {e}")
+            return torch.zeros((len(seq), self.shape)) # zero vector for each token
 
-        print(f"Writing {self.name} features to {out_path}")
-        
-        with h5py.File(out_path, "a") as h5fi:
-            for seq in tqdm(seq_list, disable=not verbose, desc=self.name):
-                seq_h5 = self.sanitize_string(seq)
-                if seq_h5 in h5fi:
-                    print(f"{seq} already in h5file")
-                    continue
-                try:
-                    feats = self.transform(seq)
-                    dset = h5fi.require_dataset(seq_h5, feats.shape, np.float32)
-                    dset[:] = feats.cpu().numpy()
-                except Exception as e:
-                    print(f"Error processing {seq}: {e}")
+    def _transform(self, seqs: List[str]) -> List[torch.Tensor]:
+        results = []
+        try:
+            data = [("protein", seq) for seq in seqs]
+            _, _, batch_tokens = self.batch_converter(data)
+            batch_tokens = batch_tokens.to(self._device)
 
+            with torch.no_grad():
+                results = self.model(batch_tokens, repr_layers=[33], return_contacts=False)
+            token_embeddings = results["representations"][33].detach().cpu()
+
+            results = [token_embeddings[j, 1:].squeeze(0) for j in range(len(seqs))]
+        except RuntimeError as e:
+            if "CUDA out of memory" in str(e):
+                torch.cuda.empty_cache()
+                print("CUDA out of memory during batch processing. Falling back to sequential processing.")
+                results = [self._transform_single(seq) for seq in seqs]
+            else:
+                raise e
+        except Exception as e:
+            print(f"Error during batch featurization: {e}")
+            results = [self._transform_single(seq) for seq in seqs]
+        
+        torch.cuda.empty_cache()  # Clear GPU cache after processing
+        return results
+      
     @staticmethod
     def sanitize_string(s):
         return ''.join(c if c.isalnum() else '_' for c in s)
-
+       
 # SaProt Featurizer
 class SaProtFeaturizer(Featurizer):
-    def __init__(self, shape: int = 1280, save_dir: Path = Path().absolute(), ext: str = "h5"):
+    def __init__(self, shape: int = 1280, save_dir: Path = Path().absolute(), ext: str = "h5", batch_size: int = 16):
         super().__init__("SaProt", shape, save_dir, ext)
         
         # Load SaProt model
@@ -461,48 +467,46 @@ class SaProtFeaturizer(Featurizer):
         self.model = self.model.to(self.device_)
         self.model.eval()  # Set the model to evaluation mode
 
-    def _transform(self, seq: str) -> torch.Tensor:
+    def _transform_single(self, seq: str) -> torch.Tensor:
         try:
             data = [("protein", seq)]
-            batch_labels, batch_strs, batch_tokens = self.batch_converter(data)
-            batch_tokens = batch_tokens.to(self.device)
+            _, _, batch_tokens = self.batch_converter(data)
+            batch_tokens = batch_tokens.to(self._device)
 
             with torch.no_grad():
                 results = self.model(batch_tokens, repr_layers=[33], return_contacts=False)
-            token_embeddings = results["representations"][33]
+            token_embeddings = results["representations"][33].detach().cpu()
 
-            # Return the full sequence of embeddings instead of just the CLS token
-            return token_embeddings[0, 1:].squeeze(0)  # This will be a 2D tensor (sequence length, feature dimension)
-
+            return token_embeddings[0, 1:].squeeze(0)  # Return the full sequence embedding
         except Exception as e:
-            print(f"Error featurizing sequence: {e}")
-            return torch.zeros((1, self.shape), device=self.device)
-        
-    def write_to_disk(self, seq_list: List[str], verbose: bool = True, file_path: Path = None) -> None:
-        if file_path is not None:
-            out_path = file_path
-        else:
-            out_path = self._save_path
+            print(f"Error featurizing single sequence: {e}")
+            return torch.zeros((len(seq), self.shape)) # zero vector for each token
 
-        print(f"Writing {self.name} features to {out_path}")
-        
-        with h5py.File(out_path, "a") as h5fi:
-            for seq in tqdm(seq_list, disable=not verbose, desc=self.name):
-                try:
-                    seq_h5 = self.sanitize_string(seq)
-                except Exception as e:
-                    print(f"Error processing {seq}: e")
-                    continue
-                if seq_h5 in h5fi:
-                    print(f"{seq} already in h5file")
-                    continue
-                try:
-                    feats = self.transform(seq)
-                    dset = h5fi.require_dataset(seq_h5, feats.shape, np.float32)
-                    dset[:] = feats.cpu().numpy()
-                except Exception as e:
-                    print(f"Error processing {seq}: {e}")
+    def _transform(self, seqs: List[str]) -> List[torch.Tensor]:
+        results = []
+        try:
+            data = [("protein", seq) for seq in seqs]
+            _, _, batch_tokens = self.batch_converter(data)
+            batch_tokens = batch_tokens.to(self._device)
 
+            with torch.no_grad():
+                results = self.model(batch_tokens, repr_layers=[33], return_contacts=False)
+            token_embeddings = results["representations"][33].detach().cpu()
+
+            results = [token_embeddings[j, 1:].squeeze(0) for j in range(len(seqs))]
+        except RuntimeError as e:
+            if "CUDA out of memory" in str(e):
+                print("CUDA out of memory during batch processing. Falling back to sequential processing.")
+                results = [self._transform_single(seq) for seq in seqs]
+            else:
+                raise e
+        except Exception as e:
+            print(f"Error during batch featurization: {e}")
+            results = [self._transform_single(seq) for seq in seqs]
+        
+        torch.cuda.empty_cache()  # Clear GPU cache after processing
+        return results
+       
     @staticmethod
     def sanitize_string(s):
         return ''.join(c if c.isalnum() else '_' for c in s)
