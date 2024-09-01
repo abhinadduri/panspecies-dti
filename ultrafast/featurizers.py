@@ -30,11 +30,11 @@ def sanitize_string(s):
     else:
         return str(s).replace("/", "|")
 
-def batched(iterable, batch_size):
+def batched(iterable, batch_size, func=None):
     """A simple batching function using only standard Python."""
     batch = []
     for item in iterable:
-        batch.append(item)
+        batch.append(item) if func is None else batch.append(func(item))
         if len(batch) == batch_size:
             yield batch
             batch = []
@@ -136,7 +136,7 @@ class Featurizer:
         return self
 
     def write_to_disk(
-            self, seq_list: T.List[str], verbose: bool = True, file_path: Path = None
+            self, seq_list: T.List[str], verbose: bool = True, file_path: Path = None, seq_func=None
     ) -> None:
         if file_path is not None:
             # this is easier for now than changing the code above
@@ -151,7 +151,7 @@ class Featurizer:
         if str(out_path).endswith('.h5'):
             with h5py.File(out_path, "a") as h5fi:
                 with tqdm(total=total_seqs, desc=self.name) as pbar:
-                    for batch in batched(seq_list, batch_size):
+                    for batch in batched(seq_list, batch_size, func=seq_func):
                         batch_results = self.transform(batch)
 
                         for seq, feats in zip(batch, batch_results):
@@ -181,11 +181,12 @@ class Featurizer:
         verbose: bool = True,
         write_first: bool = True,
         single_file: bool = True,
+        **kwargs
     ) -> None:
         print(f"Preloading {self.name} features from {self.path}")
 
         if write_first and not self._save_path.exists():
-            self.write_to_disk(seq_list, verbose=verbose)
+            self.write_to_disk(seq_list, verbose=verbose, **kwargs)
 
         if self._save_path.exists():
             if str(self._save_path).endswith('.h5'):
@@ -447,7 +448,7 @@ class ESM2Featurizer(Featurizer):
 # SaProt Featurizer
 class SaProtFeaturizer(Featurizer):
     def __init__(self, shape: int = 1280, save_dir: Path = Path().absolute(), ext: str = "h5", batch_size: int = 16):
-        super().__init__("SaProt", shape, save_dir, ext)
+        super().__init__("SaProt", shape, save_dir, ext, batch_size)
         
         # Load SaProt model
         model_path = "SaProt_650M_AF2.pt"
@@ -458,16 +459,18 @@ class SaProtFeaturizer(Featurizer):
             with open(model_path, "wb") as f:
                 f.write(response.content)
 
+        self._max_len = 1024
+
             
         self.model, self.alphabet = load_esm_saprot(model_path)
         self.batch_converter = self.alphabet.get_batch_converter()
         
         # Move model to GPU if available
-        self.device_ = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        self.model = self.model.to(self.device_)
         self.model.eval()  # Set the model to evaluation mode
+        self.model.cuda() if torch.cuda.is_available() else self.model.cpu()
 
     def _transform_single(self, seq: str) -> torch.Tensor:
+        seq = SaProtFeaturizer.prepare_string(seq)
         try:
             data = [("protein", seq)]
             _, _, batch_tokens = self.batch_converter(data)
@@ -506,6 +509,14 @@ class SaProtFeaturizer(Featurizer):
         
         torch.cuda.empty_cache()  # Clear GPU cache after processing
         return results
+
+    @staticmethod
+    def prepare_string(seq, max_len=1024):
+        if seq.isupper() and '#' not in seq: #if no 3Di tokens
+            seq = '#'.join(seq) + '#'
+        if len(seq) > max_len - 2:
+            seq = seq[: max_len * 2 - 2]
+        return seq
        
     @staticmethod
     def sanitize_string(s):

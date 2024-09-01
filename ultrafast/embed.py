@@ -46,10 +46,13 @@ def embed(
     device = torch.device(f"cuda:{device}") if use_cuda else torch.device("cpu")
     model.to(device)
     
+    # make directory for saving featurizations
+    if os.path.dirname(args.output_path) != '' and not os.path.exists(os.path.dirname(args.output_path)):
+        os.makedirs(os.path.dirname(args.output_path))
     if args.moltype == "drug":
-        featurizer = get_featurizer(model.args.drug_featurizer)
+        featurizer = get_featurizer(model.args.drug_featurizer, batch_size=args.batch_size, save_dir=os.path.dirname(args.output_path))
     elif args.moltype == "target":
-        featurizer = get_featurizer(model.args.target_featurizer)
+        featurizer = get_featurizer(model.args.target_featurizer, batch_size=args.batch_size, save_dir=os.path.dirname(args.output_path))
     featurizer = featurizer.to(device)
 
     dataset = EmbedDataset(args.data_file, args.moltype, featurizer)
@@ -66,8 +69,8 @@ def embed(
     embeddings = np.concatenate(embeddings, axis=0)
 
     # if output_path contains directories that do not exist, create them
-    if os.path.dirname(args.output_path) != '' and not os.path.exists(os.path.dirname(args.output_path)):
-        os.makedirs(os.path.dirname(args.output_path))
+    # if os.path.dirname(args.output_path) != '' and not os.path.exists(os.path.dirname(args.output_path)):
+    #     os.makedirs(os.path.dirname(args.output_path))
 
     np.save(args.output_path, embeddings)
 

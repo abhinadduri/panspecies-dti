@@ -54,6 +54,9 @@ def embed_collate_fn(args: T.Tuple[torch.Tensor, torch.Tensor], moltype="target"
     :rtype: torch.Tensor
     """
     # m_emb = [a for a in args]
+    if isinstance(args[0],list):
+        args = [a[0] for a in args]
+
 
     if moltype == "drug":
         mols = torch.stack(args, 0)
@@ -214,12 +217,14 @@ class EmbedDataset(Dataset):
         self.featurizer = featurizer
 
         self._column = "SMILES" if self.moltype == "drug" else "Target Sequence"
+        print("Featurizing the data")
+        self.featurizer.preload(self.data[self._column].unique().tolist(), write_first=True, seq_func=featurizer.prepare_string)
 
     def __len__(self):
         return len(self.data)
 
     def __getitem__(self, i):
-        mol = self.featurizer(self.data[self._column].iloc[i])
+        mol = self.featurizer.features[self.data[self._column].iloc[i]]
 
         return mol
 
