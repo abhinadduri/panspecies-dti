@@ -224,7 +224,8 @@ class EmbedDataset(Dataset):
         return len(self.data)
 
     def __getitem__(self, i):
-        mol = self.featurizer.features[self.data[self._column].iloc[i]]
+        seq = self.featurizer.prepare_string(self.data[self._column].iloc[i])
+        mol = self.featurizer.features[seq]
 
         return mol
 

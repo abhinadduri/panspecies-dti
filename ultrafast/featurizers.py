@@ -192,6 +192,8 @@ class Featurizer:
             if str(self._save_path).endswith('.h5'):
                 with h5py.File(self._save_path, "r") as h5fi:
                     for seq in tqdm(seq_list, disable=not verbose, desc=self.name):
+                        if "seq_func" in kwargs:
+                            seq = kwargs["seq_func"](seq)
                         seq_h5 = sanitize_string(seq)
                         if seq_h5 in h5fi:
                             feats = torch.from_numpy(h5fi[seq_h5][:])
@@ -205,6 +207,8 @@ class Featurizer:
 
         else:
             for seq in tqdm(seq_list, disable=not verbose, desc=self.name):
+                if "seq_func" in kwargs:
+                    seq = kwargs["seq_func"](seq)
                 feats = self.transform(seq)
 
 
