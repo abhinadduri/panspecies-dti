@@ -135,6 +135,10 @@ class Featurizer:
         self._on_cuda = False
         return self
 
+    @staticmethod
+    def prepare_string(seq):
+        return seq
+
     def write_to_disk(
             self, seq_list: T.List[str], verbose: bool = True, file_path: Path = None, seq_func=None
     ) -> None:
