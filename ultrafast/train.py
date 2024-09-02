@@ -55,6 +55,7 @@ def train_cli():
 
     parser.add_argument("--num-layers-target", type=int, help="Number of layers in target transformer", dest="num_layers_target")
     parser.add_argument("--drug-layers", type=int, default=2, choices=[1, 2], help="Number of layers in drug transformer", dest="drug_layers")
+    parser.add_argument("--num-heads-agg", type=int, default=4, help="Number of attention heads for learned aggregation", dest="num_heads_agg")
     parser.add_argument("--dropout", type=float, help="Dropout rate for transformer", dest="dropout")
     parser.add_argument("--batch-size", type=int, default=32, help="batch size for training/val/test")
     parser.add_argument("--no-wandb", action="store_true", help="Do not use wandb")
@@ -84,6 +85,7 @@ def train(
     dropout: float,
     batch_size: int,
     no_wandb: bool,
+    num_heads_agg: int,
 ):
     args = argparse.Namespace(
         experiment_id=experiment_id,
@@ -107,6 +109,7 @@ def train(
         dropout=dropout,
         batch_size=batch_size,
         no_wandb=no_wandb,
+        num_heads_agg=num_heads_agg,
     )
     config = OmegaConf.load(args.config)
     args_overrides = {k: v for k, v in vars(args).items() if v is not None}
