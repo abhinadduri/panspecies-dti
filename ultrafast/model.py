@@ -483,6 +483,14 @@ class DrugTargetCoembeddingLightning(pl.LightningModule):
             pdg_loss = self.PDG_loss(attn_head)
             self.log("val/PDG_loss", pdg_loss)
 
+        if self.AG != 0:
+            attn_loss = self.AG_loss(attn_head, binding_site)
+            self.log("val/AG_loss", attn_loss)
+
+        if self.PDG != 0:
+            pdg_loss = self.PDG_loss(attn_head)
+            self.log("val/PDG_loss", pdg_loss)
+
         self.val_step_outputs.extend(similarity)
         self.val_step_targets.extend(label)
 

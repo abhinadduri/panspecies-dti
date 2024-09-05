@@ -423,7 +423,6 @@ class DTIDataModule(pl.LightningDataModule):
     def test_dataloader(self):
         return DataLoader(self.data_test, **self._loader_kwargs)
 
-class DTIStructDataModule(DTIDataModule):
     """ DataModule used for training on drug-target interaction data.
     Uses the following data sets:
     - biosnap
