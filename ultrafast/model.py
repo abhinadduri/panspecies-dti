@@ -8,7 +8,6 @@ from ultrafast.loss import MarginScheduledLossFunction, InfoNCELoss, AttentionGu
 import pytorch_lightning as pl
 import torchmetrics
 
-<<<<<<< HEAD:ultrafast/model.py
 class FocalLoss(nn.Module):
     ### https://github.com/facebookresearch/fvcore/blob/main/fvcore/nn/focal_loss.py
     def __init__(self,
@@ -41,42 +40,6 @@ class FocalLoss(nn.Module):
 
         return loss
 
-class AttentionGuidanceLoss(torch.nn.Module):
-    def __init__(self):
-        super(AttentionGuidanceLoss, self).__init__()
-
-    def forward(self, attention_head, binding_site):
-        """
-        attention_head: torch.Tensor
-            The attention head from the transformer model. The shape should be (B, H, N)
-        binding_site: torch.Tensor
-            The binding site of the protein. The shape should be (B, N)
-        """
-        # pull out the first attention head
-        attention_head = attention_head[:,0,:]
-
-
-        # Calculate the loss
-        loss = torch.linalg.matrix_norm(attention_head - binding_site, ord='fro')
-
-        return loss
-
-class PatternDecorrelationLoss(torch.nn.Module):
-    def __init__(self):
-        super(PatternDecorrelationLoss, self).__init__()
-
-    def forward(self, attention_head):
-        """
-        attention_head: torch.Tensor
-            The attention head from the transformer model. The shape should be (B, H, N)
-        """
-        # Calculate the loss
-        loss = torch.linalg.matrix_norm(attention_head.mT @ attention_head - torch.eye(attention_head.shape[2]), ord='fro')
-
-        return loss
-
-=======
->>>>>>> 5206767 (Create loss.py and LearnedAgg_Proj):model.py
 class FeedForward(nn.Module):
     def __init__(self, dim, hidden_dim, dropout = 0.):
         super().__init__()
@@ -286,7 +249,6 @@ class DrugTargetCoembeddingLightning(pl.LightningModule):
         elif args.prot_proj == "agg":
             protein_projector = LearnedAgg_Projection(self.target_dim, self.latent_dim, self.activation, num_heads=args.num_heads_agg, attn_drop=dropout, proj_drop=dropout)
 
-<<<<<<< HEAD:ultrafast/model.py
         if 'model_size' in args and args.model_size == "large":  # override the above settings and use a large model for drug and target
             self.drug_projector = nn.Sequential(
                 nn.Linear(self.drug_dim, 1260),
@@ -367,18 +329,6 @@ class DrugTargetCoembeddingLightning(pl.LightningModule):
             })
         
         if 'prot_proj' not in args or args.prot_proj == "avg":
-=======
-
-        if args.prot_proj != "agg":
-            self.target_projector = nn.Sequential(
-                    protein_projector,
-                    self.activation()
-            )
-        else:
-            self.target_projector = protein_projector
-
-        if args.prot_proj == "conplex":
->>>>>>> 5206767 (Create loss.py and LearnedAgg_Proj):model.py
             nn.init.xavier_normal_(self.target_projector[0][1].weight)
 
         if self.classify:
@@ -445,7 +395,6 @@ class DrugTargetCoembeddingLightning(pl.LightningModule):
         # Add a batch dimension if it's missing
         if target.dim() == 2:
             target = target.unsqueeze(0)
-<<<<<<< HEAD:ultrafast/model.py
 
         if model_size == 'huge' or model_size == 'mega':
             z = self.target_projector['attn'](target)
@@ -455,13 +404,6 @@ class DrugTargetCoembeddingLightning(pl.LightningModule):
             target_projection = self.target_projector['out'](z)
         else:
             target_projection = self.target_projector(target)
-=======
-        attn_head = None
-        if self.args.prot_proj != "agg":
-            target_projection = self.target_projector(target)
-        else:
-            target_projection, attn_head = self.target_projector(target)
->>>>>>> 5206767 (Create loss.py and LearnedAgg_Proj):model.py
 
         if self.classify:
             similarity = 4 * F.cosine_similarity(
@@ -514,15 +456,11 @@ class DrugTargetCoembeddingLightning(pl.LightningModule):
         if self.classify:
             similarity = torch.squeeze(self.sigmoid(similarity))
 
-<<<<<<< HEAD:ultrafast/model.py
         loss = self.loss_fct(similarity, label) 
         infoloss = 0
         if self.InfoNCEWeight > 0:
             infoloss = self.infoNCE_loss_fct(drug, protein, label)
 
-=======
-        loss = self.loss_fct(similarity, label)
->>>>>>> 5206767 (Create loss.py and LearnedAgg_Proj):model.py
         ag_loss = 0
         if self.AG != 0:
             ag_loss = self.AG_loss(attn_head, binding_site)
