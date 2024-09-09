@@ -289,10 +289,12 @@ class DrugTargetCoembeddingLightning(pl.LightningModule):
             self.metrics = {"mse": self.val_mse, "pcc": self.val_pcc}
             self.loss_fct = torch.nn.MSELoss()
 
+        self.AG = 0
         if args.AG:
             self.AG = args.AG
             self.AG_loss = AttentionGuidanceLoss()
 
+        self.PDG = 0
         if args.PDG:
             self.PDG = args.PDG
             self.PDG_loss = PatternDecorrelationLoss()
@@ -364,7 +366,7 @@ class DrugTargetCoembeddingLightning(pl.LightningModule):
         return loss
 
     def non_contrastive_step(self, batch):
-        if self.args.task != 'binding_site':
+        if self.args.task != 'bindingdb_bs':
             drug, protein, label = batch
         else:
             drug, protein, label, binding_site = batch
@@ -429,7 +431,7 @@ class DrugTargetCoembeddingLightning(pl.LightningModule):
     def validation_step(self, batch, batch_idx):
         if self.global_step == 0 and self.global_rank == 0 and not self.args.no_wandb:
             wandb.define_metric("val/aupr", summary="max")
-        if self.args.task != 'binding_site':
+        if self.args.task != 'bindingdb_bs':
             drug, protein, label = batch
         else:
             drug, protein, label, binding_site = batch
@@ -440,14 +442,6 @@ class DrugTargetCoembeddingLightning(pl.LightningModule):
 
         loss = self.loss_fct(similarity, label)
         self.log("val/loss", loss, sync_dist=True if self.trainer.num_devices > 1 else False)
-
-        if self.AG != 0:
-            attn_loss = self.AG_loss(attn_head, binding_site)
-            self.log("val/AG_loss", attn_loss)
-
-        if self.PDG != 0:
-            pdg_loss = self.PDG_loss(attn_head)
-            self.log("val/PDG_loss", pdg_loss)
 
         if self.AG != 0:
             attn_loss = self.AG_loss(attn_head, binding_site)

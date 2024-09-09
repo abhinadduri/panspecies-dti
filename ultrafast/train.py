@@ -40,6 +40,7 @@ def train_cli():
         "biosnap_mol",
         "dti_dg",
         "binding_site",
+        "bindingdb_bs",
         ], type=str, help="Task name. Could be biosnap, bindingdb, davis, biosnap_prot, biosnap_mol, dti_dg.",
     )
     parser.add_argument("--drug-featurizer", help="Drug featurizer", dest="drug_featurizer")
@@ -87,6 +88,8 @@ def train(
     num_layers_target: int,
     drug_layers: int,
     dropout: float,
+    AG: float,
+    PDG: float,
     batch_size: int,
     no_wandb: bool,
     num_heads_agg: int,
@@ -111,6 +114,8 @@ def train(
         num_layers_target=num_layers_target,
         drug_layers=drug_layers,
         dropout=dropout,
+        AG=AG,
+        PDG=PDG,
         batch_size=batch_size,
         no_wandb=no_wandb,
         num_heads_agg=num_heads_agg,
@@ -199,7 +204,7 @@ def train(
             RuntimeError("EnzPredDataModule not implemented yet")
         elif config.target_featurizer == 'SaProtFeaturizer':
             datamodule = DTIStructDataModule(**task_dm_kwargs)
-        elif config.task == 'binding_site':
+        elif config.task == 'bindingdb_bs':
             datamodule = BindSiteDataModule(**task_dm_kwargs)
         else:
             datamodule = DTIDataModule(**task_dm_kwargs)

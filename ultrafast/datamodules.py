@@ -39,6 +39,7 @@ def get_task_dir(task_name: str):
         "phosphatase": "./data/EnzPred/phosphatase_chiral_binary",
         "leash": "./data/leash/",
         "binding_site": "./data/binding_site/",
+        "bindingdb_bs": "./data/BindingDB_BS",
     }
 
     return Path(task_paths[task_name.lower()]).resolve()
@@ -423,6 +424,7 @@ class DTIDataModule(pl.LightningDataModule):
     def test_dataloader(self):
         return DataLoader(self.data_test, **self._loader_kwargs)
 
+class DTIStructDataModule(DTIDataModule):
     """ DataModule used for training on drug-target interaction data.
     Uses the following data sets:
     - biosnap
@@ -500,6 +502,8 @@ class BindSiteDataModule(DTIDataModule):
         self._loader_kwargs["collate_fn"] = drug_target_bs_collate_fn
 
     def binding_str_to_list(self, binding_str):
+        if isinstance(binding_str, float): #if its a float, then its np.nan
+            return []
         return list(map(int, binding_str.split(" ")))
 
     def setup(self, stage = None):
@@ -508,6 +512,7 @@ class BindSiteDataModule(DTIDataModule):
         self.df_val = pd.read_csv(self._data_dir / self._val_path, **self._csv_kwargs, dtype={self._target_column: str})
         self.df_val[self._bindingsite_column] = self.df_val[self._bindingsite_column].apply(self.binding_str_to_list)
         self.df_test = pd.read_csv(self._data_dir / self._test_path, **self._csv_kwargs, dtype={self._target_column: str})
+        self.df_test[self._bindingsite_column] = self.df_test[self._bindingsite_column].apply(self.binding_str_to_list)
 
         self._dataframes = [self.df_train, self.df_val, self.df_test]
 
