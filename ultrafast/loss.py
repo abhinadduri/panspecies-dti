@@ -140,7 +140,7 @@ class AttentionGuidanceLoss(torch.nn.Module):
 
 
         # Calculate the loss
-        loss = torch.linalg.matrix_norm(attention_head - binding_site, ord='fro').square()
+        loss = F.mse_loss(attention_head, binding_site)
 
         return loss
 

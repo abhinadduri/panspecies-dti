@@ -352,10 +352,12 @@ class DrugTargetCoembeddingLightning(pl.LightningModule):
             self.metrics = {"mse": self.val_mse, "pcc": self.val_pcc}
             self.loss_fct = torch.nn.MSELoss()
 
+        self.AG = 0
         if args.AG:
             self.AG = args.AG
             self.AG_loss = AttentionGuidanceLoss()
 
+        self.PDG = 0
         if args.PDG:
             self.PDG = args.PDG
             self.PDG_loss = PatternDecorrelationLoss()
