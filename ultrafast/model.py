@@ -276,7 +276,7 @@ class DrugTargetCoembeddingLightning(pl.LightningModule):
         # instantiate InfoNCE loss function as 0 for now
         self.InfoNCEWeight = InfoNCEWeight
         if self.InfoNCEWeight:
-            self.infoNCE_loss_fct = InfoNCELoss() #ignoring temperature for now
+            self.infoNCE_loss_fct = InfoNCELoss(temperature=args.InfoNCETemp if 'InfoNCETemp' in args else 0.5) 
                     
 
         self.save_hyperparameters()

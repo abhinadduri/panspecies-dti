@@ -47,6 +47,7 @@ def train_cli():
     parser.add_argument("--lr", "--learning-rate", type=float, help="initial learning rate", dest="lr",)
     parser.add_argument("--clr", type=float, help="contrastive initial learning rate", dest="clr")
     parser.add_argument("--InfoNCEWeight","-I", type=float, help="InfoNCE loss weight", dest="InfoNCEWeight")
+    parser.add_argument("--InfoNCETemp", "-T", type=float, help="InfoNCE temperature", dest="InfoNCETemp")
     parser.add_argument("--r", "--replicate", type=int, help="Replicate", dest="replicate")
     parser.add_argument("--d", "--device", default=0, type=int, help="CUDA device", dest="device")
     parser.add_argument("--verbosity", type=int, help="Level at which to log", dest="verbosity")
@@ -76,6 +77,7 @@ def train(
     lr: float,
     clr: float,
     InfoNCEWeight: float,
+    InfoNCETemp: float,
     replicate: int,
     device: int,
     verbosity: int,
@@ -101,6 +103,7 @@ def train(
         lr=lr,
         clr=clr,
         InfoNCEWeight=InfoNCEWeight,
+        InfoNCETemp=InfoNCETemp,
         replicate=replicate,
         device=device,
         verbosity=verbosity,
