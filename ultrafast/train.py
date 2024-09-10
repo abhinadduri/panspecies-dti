@@ -55,7 +55,7 @@ def train_cli():
     parser.add_argument('--out-type', choices=['cls','mean'], help="use cls token or mean of everything else")
 
     parser.add_argument("--num-layers-target", type=int, help="Number of layers in target transformer", dest="num_layers_target")
-    parser.add_argument("--drug-layers", type=int, default=2, choices=[1, 2], help="Number of layers in drug transformer", dest="drug_layers")
+    parser.add_argument("--drug-layers", type=int, choices=[1, 2], help="Number of layers in drug transformer", dest="drug_layers")
     parser.add_argument("--num-heads-agg", type=int, default=4, help="Number of attention heads for learned aggregation", dest="num_heads_agg")
     parser.add_argument("--dropout", type=float, help="Dropout rate for transformer", dest="dropout")
     parser.add_argument("--batch-size", type=int, default=32, help="batch size for training/val/test")
