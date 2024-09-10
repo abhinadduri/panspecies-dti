@@ -2,7 +2,7 @@ import torch
 import wandb
 from torch import nn
 import torch.nn.functional as F
-from ultrafast.contrastive_loss import MarginScheduledLossFunction
+from ultrafast.contrastive_loss import MarginScheduledLossFunction, InfoNCELoss
 
 import pytorch_lightning as pl
 import torchmetrics
@@ -201,6 +201,7 @@ class DrugTargetCoembeddingLightning(pl.LightningModule):
         dropout=0,
         lr=1e-4,
         contrastive=False,
+        InfoNCEWeight=0,
         args=None,
     ):
         super().__init__()
@@ -272,6 +273,12 @@ class DrugTargetCoembeddingLightning(pl.LightningModule):
                     N_restart = args.margin_t0,
                     update_fn = args.margin_fn
                     )
+        # instantiate InfoNCE loss function as 0 for now
+        self.InfoNCEWeight = InfoNCEWeight
+        if self.InfoNCEWeight:
+            self.infoNCE_loss_fct = InfoNCELoss() #ignoring temperature for now
+                    
+
         self.save_hyperparameters()
 
         self.val_step_outputs = []
@@ -296,7 +303,7 @@ class DrugTargetCoembeddingLightning(pl.LightningModule):
                 target_projection.view(-1, self.latent_dim, 1),
             ).squeeze()
 
-        return similarity
+        return drug_projection, target_projection, similarity
 
     def configure_optimizers(self):
         optimizers = []
@@ -327,16 +334,24 @@ class DrugTargetCoembeddingLightning(pl.LightningModule):
         loss = self.contrastive_loss_fct(anchor_projection, positive_projection, negative_projection)
         return loss
 
-    def non_contrastive_step(self, batch):
+    def non_contrastive_step(self, batch, train=True):
         drug, protein, label = batch
-        similarity = self.forward(drug, protein)
+        drug, protein, similarity = self.forward(drug, protein)
+
 
         if self.classify:
             similarity = torch.squeeze(self.sigmoid(similarity))
 
         loss = self.loss_fct(similarity, label)
+        info_loss = 0
+        if self.InfoNCEWeight > 0:
+            infoloss = self.InfoNCEWeight * self.infoNCE_loss_fct(drug, protein, label)
+            loss += infoloss
 
-        return loss
+        if train:
+            return loss, infoloss
+        else:
+            return loss, infoloss, similarity
 
     def training_step(self, batch, batch_idx):
         if self.contrastive and self.current_epoch % 2 == 1:
@@ -352,10 +367,12 @@ class DrugTargetCoembeddingLightning(pl.LightningModule):
             else:
                 opt = self.optimizers()
             opt.zero_grad()
-            loss = self.non_contrastive_step(batch)
+            loss,infoloss = self.non_contrastive_step(batch)
             self.manual_backward(loss)
             opt.step()
             self.log("train/loss", loss, sync_dist=True if self.trainer.num_devices > 1 else False)
+            if self.InfoNCEWeight > 0:
+                self.log("train/info_loss", infoloss, sync_dist=True if self.trainer.num_devices > 1 else False)
 
         return loss
 
@@ -377,14 +394,11 @@ class DrugTargetCoembeddingLightning(pl.LightningModule):
     def validation_step(self, batch, batch_idx):
         if self.global_step == 0 and self.global_rank == 0 and not self.args.no_wandb:
             wandb.define_metric("val/aupr", summary="max")
-        drug, protein, label = batch
-        similarity = self.forward(drug, protein)
-
-        if self.classify:
-            similarity = torch.squeeze(F.sigmoid(similarity))
-
-        loss = self.loss_fct(similarity, label)
+        _, _, label = batch
+        loss, infoloss, similarity = self.non_contrastive_step(batch, train=False)
         self.log("val/loss", loss, sync_dist=True if self.trainer.num_devices > 1 else False)
+        if self.InfoNCEWeight > 0:
+            self.log("val/info_loss", infoloss, sync_dist=True if self.trainer.num_devices > 1 else False)
 
         self.val_step_outputs.extend(similarity)
         self.val_step_targets.extend(label)
@@ -403,11 +417,8 @@ class DrugTargetCoembeddingLightning(pl.LightningModule):
         self.val_step_targets.clear()
 
     def test_step(self, batch, batch_idx):
-        drug, protein, label = batch
-        similarity = self.forward(drug, protein)
-
-        if self.classify:
-            similarity = torch.squeeze(F.sigmoid(similarity))
+        _, _, label = batch
+        _, _, similarity = self.non_contrastive_step(batch, train=False)
 
         self.test_step_outputs.extend(similarity)
         self.test_step_targets.extend(label)

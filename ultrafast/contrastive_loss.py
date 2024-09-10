@@ -83,3 +83,43 @@ class MarginScheduledLossFunction:
         # logg.debug(negative, negative.shape)
         return self._loss_fn(anchor, positive, negative)
 
+# from https://theaisummer.com/simclr/
+class InfoNCELoss(nn.Module):
+   """
+   InfoNCELoss as in SimCLR paper, identical to CLIP loss (if proj_1 is text and proj_2 is image)
+   """
+   def __init__(self, temperature=0.5):
+       super().__init__()
+       self.temperature = temperature
+
+   def calc_similarity_batch(self, a, b):
+       representations = torch.cat([a, b], dim=0)
+       return F.cosine_similarity(representations.unsqueeze(1), representations.unsqueeze(0), dim=2)
+
+   def forward(self, proj_1, proj_2, labels=None):
+       """
+       proj_1 and proj_2 are batched embeddings [batch, embedding_dim]
+       where corresponding indices are pairs
+       z_i, z_j in the SimCLR paper
+       """
+       assert proj_1.shape[0] == proj_2.shape[0], f"batch size of proj_1 ({proj_1.shape[0]}) and proj_2 ({proj_2.shape[0]}) must be equal"
+       batch_size = proj_1.shape[0]
+       mask = (~torch.eye(batch_size * 2, batch_size * 2, dtype=bool)).float()
+       z_i = F.normalize(proj_1, p=2, dim=1) 
+       z_j = F.normalize(proj_2, p=2, dim=1) 
+
+       similarity_matrix = self.calc_similarity_batch(z_i, z_j)
+
+       # multiply by label to only get the positive pairs
+       sim_ij = torch.diag(similarity_matrix, batch_size) * labels 
+       sim_ji = torch.diag(similarity_matrix, -batch_size) * labels
+
+       positives = torch.cat([sim_ij, sim_ji], dim=0)
+
+       numerator = torch.exp(positives / self.temperature)
+
+       denominator = mask.to(proj_1) * torch.exp(similarity_matrix / self.temperature)
+
+       all_losses = -torch.log(numerator/ torch.sum(denominator, dim=1))
+       loss = torch.sum(all_losses) / (2 * batch_size)
+       return loss
