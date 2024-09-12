@@ -46,6 +46,7 @@ def train_cli():
     parser.add_argument("--epochs", type=int, help="number of total epochs to run")
     parser.add_argument("--lr", "--learning-rate", type=float, help="initial learning rate", dest="lr",)
     parser.add_argument("--clr", type=float, help="contrastive initial learning rate", dest="clr")
+    parser.add_argument("--CEWeight", "-C", default=1.0, type=float, help="Cross Entropy loss weight", dest="CEWeight")
     parser.add_argument("--InfoNCEWeight","-I", type=float, help="InfoNCE loss weight", dest="InfoNCEWeight")
     parser.add_argument("--InfoNCETemp", "-T", type=float, help="InfoNCE temperature", dest="InfoNCETemp")
     parser.add_argument("--r", "--replicate", type=int, help="Replicate", dest="replicate")
@@ -62,6 +63,7 @@ def train_cli():
     parser.add_argument("--batch-size", type=int, default=32, help="batch size for training/val/test")
     parser.add_argument("--no-wandb", action="store_true", help="Do not use wandb")
 
+
     args = parser.parse_args()
     train(**vars(args))
 
@@ -76,6 +78,7 @@ def train(
     epochs: int,
     lr: float,
     clr: float,
+    CEWeight: float,
     InfoNCEWeight: float,
     InfoNCETemp: float,
     replicate: int,
@@ -102,6 +105,7 @@ def train(
         epochs=epochs,
         lr=lr,
         clr=clr,
+        CEWeight=CEWeight,
         InfoNCEWeight=InfoNCEWeight,
         InfoNCETemp=InfoNCETemp,
         replicate=replicate,

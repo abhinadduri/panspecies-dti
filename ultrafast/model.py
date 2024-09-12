@@ -277,6 +277,8 @@ class DrugTargetCoembeddingLightning(pl.LightningModule):
         self.InfoNCEWeight = InfoNCEWeight
         if self.InfoNCEWeight:
             self.infoNCE_loss_fct = InfoNCELoss(temperature=args.InfoNCETemp if 'InfoNCETemp' in args else 0.5) 
+
+        self.CEWeight = 1 if 'CEWeight' not in args else args.CEWeight
                     
 
         self.save_hyperparameters()
@@ -342,14 +344,13 @@ class DrugTargetCoembeddingLightning(pl.LightningModule):
         if self.classify:
             similarity = torch.squeeze(self.sigmoid(similarity))
 
-        loss = self.loss_fct(similarity, label)
-        info_loss = 0
+        loss = self.loss_fct(similarity, label) 
+        infoloss = 0
         if self.InfoNCEWeight > 0:
             infoloss = self.InfoNCEWeight * self.infoNCE_loss_fct(drug, protein, label)
-            loss += infoloss
 
         if train:
-            return loss, infoloss
+            return loss * self.CEWeight, infoloss
         else:
             return loss, infoloss, similarity
 
@@ -368,7 +369,7 @@ class DrugTargetCoembeddingLightning(pl.LightningModule):
                 opt = self.optimizers()
             opt.zero_grad()
             loss,infoloss = self.non_contrastive_step(batch)
-            self.manual_backward(loss)
+            self.manual_backward(loss+infoloss)
             opt.step()
             self.log("train/loss", loss, sync_dist=True if self.trainer.num_devices > 1 else False)
             if self.InfoNCEWeight > 0:
