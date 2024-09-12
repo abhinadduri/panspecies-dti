@@ -62,6 +62,7 @@ def train_cli():
     parser.add_argument("--dropout", type=float, help="Dropout rate for transformer", dest="dropout")
     parser.add_argument("--batch-size", type=int, default=32, help="batch size for training/val/test")
     parser.add_argument("--no-wandb", action="store_true", help="Do not use wandb")
+    parser.add_argument("--model-size", default="small", choices=["small", "large"], help="Choose the size of the model")
 
 
     args = parser.parse_args()
@@ -207,7 +208,8 @@ def train(
         else:
             datamodule = DTIDataModule(**task_dm_kwargs)
 
-    datamodule.prepare_data()
+    if config.task != 'merged':
+        datamodule.prepare_data() # this task is already setup
     datamodule.setup()
 
     # Load model
@@ -252,6 +254,7 @@ def train(
     trainer = pl.Trainer(
             accelerator="auto",
             devices="auto",
+            strategy="ddp",
             logger=wandb_logger if not config.no_wandb else None,
             max_epochs=config.epochs,
             callbacks=[checkpoint_callback],

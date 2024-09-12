@@ -8,6 +8,7 @@ import typing as T
 import datamol as dm
 import esm
 import requests
+import os
 
 from functools import partial
 from molfeat.trans.pretrained.hf_transformers import PretrainedHFTransformer
@@ -178,6 +179,93 @@ class Featurizer:
                     pbar.update(batch_size)
 
             torch.save(features,out_path)
+
+        elif str(out_path).endswith('.lmdb'):
+            db = px.Writer(dirpath=str(out_path), map_size_limit=10000, ram_gb_limit=10)
+            with tqdm(total=total_seqs, desc=self.name) as pbar:
+                for batch in batched(seq_list, batch_size):
+                    batch_results = self.transform(batch)
+                    for seq, result in zip(batch, batch_results):
+                        db.put_samples(seq, result)
+                    pbar.update(batch_size)
+
+            db.close()
+
+    def _read_chunk(file_path, chunk):
+        result = {}
+        with h5py.File(file_path, "r") as h5fi:
+            for seq in chunk:
+                seq_h5 = sanitize_string(seq)
+                if seq_h5 in h5fi:
+                    feats = torch.from_numpy(h5fi[seq_h5][:])
+                    result[seq] = feats
+        return result
+
+    def process_merged_drugs(self, id_to_smiles):
+        """
+        This function is intended to featurize the huge database file, and should not be used for any other database.
+        Individual featurizers are able to process `batch_size` number of elements at once, so provide this size.
+        """
+
+        lmdb_path = 'data/MERGED/huge_data/smiles.lmdb'
+        if os.path.exists(lmdb_path):
+            print(f"File {lmdb_path} exists, skipping processing smiles.")
+            return
+
+        # Sort the IDs to ensure ascending order
+        sorted_ids = sorted(id_to_smiles.keys())
+
+        # Open LMDB environment, give it 5GB just in case.
+        db = px.Writer(dirpath=lmdb_path, map_size_limit=50000, ram_gb_limit=10)
+
+        # For each batch of 2048 id's, featurize them, e.g., call self.transform on a list of sequences
+        batch_size = 2048 * 8
+        for i in tqdm(range(0, len(sorted_ids), batch_size)):
+            batch_ids = np.array(sorted_ids[i:i+batch_size])
+            batch_smiles = [id_to_smiles[idx] for idx in batch_ids]
+
+            # Compute Morgan fingerprints for the batch
+            fingerprints = self.transform(batch_smiles)
+
+            # for idx, result in zip(batch_ids, fingerprints):
+            db.put_samples('ids', batch_ids, 'feats', fingerprints.numpy())
+
+        print(f"Processed and stored {len(sorted_ids)} drug fingerprints in LMDB.")
+
+        # Loading this data will require picking bin ids, then sampling from within those bin ids
+
+    def process_merged_targets(self, id_to_target):
+        """ 
+        This function is intended to featurize the huge database file, and should not be used for any other database.
+        """
+
+        lmdb_path = 'data/MERGED/huge_data/targets.lmdb'
+        if os.path.exists(lmdb_path):
+            print(f"File {lmdb_path} exists, skipping processing protein targets.")
+            return
+
+        # retain only the keys for valid proteins
+        id_list = []
+        for k in list(id_to_target.keys()):
+            if any(char.isdigit() for char in id_to_target[k]):
+                continue
+            id_list.append(k)
+
+        # Open the LMDB env, give it 5GB just in case.
+        db = px.Writer(dirpath=lmdb_path, map_size_limit=100000, ram_gb_limit=10)
+
+        # For each batch, featurize them, e.g., call self.transform on a list of sequence
+        batch_size = 32
+        for i in tqdm(range(0, len(id_list), batch_size)):
+            batch_ids = np.array(id_list[i:i+batch_size])
+            # id to target is uniprot to aaseq
+            batch_targets = [id_to_target[seq_id] for seq_id in batch_ids]
+
+            feats = self.transform(batch_targets)
+
+            for seq, results in zip(batch_ids, feats):
+                seq_data = results.numpy()[np.newaxis, ...]
+                db.put_samples(seq, seq_data)
 
     def preload(
         self,
