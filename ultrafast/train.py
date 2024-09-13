@@ -46,6 +46,9 @@ def train_cli():
     parser.add_argument("--epochs", type=int, help="number of total epochs to run")
     parser.add_argument("--lr", "--learning-rate", type=float, help="initial learning rate", dest="lr",)
     parser.add_argument("--clr", type=float, help="contrastive initial learning rate", dest="clr")
+    parser.add_argument("--CEWeight", "-C", default=1.0, type=float, help="Cross Entropy loss weight", dest="CEWeight")
+    parser.add_argument("--InfoNCEWeight","-I", type=float, help="InfoNCE loss weight", dest="InfoNCEWeight")
+    parser.add_argument("--InfoNCETemp", "-T", type=float, help="InfoNCE temperature", dest="InfoNCETemp")
     parser.add_argument("--r", "--replicate", type=int, help="Replicate", dest="replicate")
     parser.add_argument("--d", "--device", default=0, type=int, help="CUDA device", dest="device")
     parser.add_argument("--verbosity", type=int, help="Level at which to log", dest="verbosity")
@@ -54,11 +57,12 @@ def train_cli():
     parser.add_argument('--out-type', choices=['cls','mean'], help="use cls token or mean of everything else")
 
     parser.add_argument("--num-layers-target", type=int, help="Number of layers in target transformer", dest="num_layers_target")
-    parser.add_argument("--drug-layers", type=int, default=2, choices=[1, 2], help="Number of layers in drug transformer", dest="drug_layers")
+    parser.add_argument("--drug-layers", type=int, choices=[1, 2], help="Number of layers in drug transformer", dest="drug_layers")
     parser.add_argument("--num-heads-agg", type=int, default=4, help="Number of attention heads for learned aggregation", dest="num_heads_agg")
     parser.add_argument("--dropout", type=float, help="Dropout rate for transformer", dest="dropout")
     parser.add_argument("--batch-size", type=int, default=32, help="batch size for training/val/test")
     parser.add_argument("--no-wandb", action="store_true", help="Do not use wandb")
+
 
     args = parser.parse_args()
     train(**vars(args))
@@ -74,6 +78,9 @@ def train(
     epochs: int,
     lr: float,
     clr: float,
+    CEWeight: float,
+    InfoNCEWeight: float,
+    InfoNCETemp: float,
     replicate: int,
     device: int,
     verbosity: int,
@@ -98,6 +105,9 @@ def train(
         epochs=epochs,
         lr=lr,
         clr=clr,
+        CEWeight=CEWeight,
+        InfoNCEWeight=InfoNCEWeight,
+        InfoNCETemp=InfoNCETemp,
         replicate=replicate,
         device=device,
         verbosity=verbosity,
@@ -187,7 +197,6 @@ def train(
                 task_kwargs=task_dm_kwargs,
                 contrastive_kwargs=contrastive_dm_kwargs,
                 )
-        config.epochs *= 2
     else:
         if config.task == 'dti_dg':
             datamodule = TDCDataModule(**task_dm_kwargs)
@@ -211,6 +220,7 @@ def train(
             latent_dim=config.latent_dimension,
             classify=config.classify,
             contrastive=config.contrastive,
+            InfoNCEWeight=config.InfoNCEWeight,
             num_layers_target=config.num_layers_target,
             dropout=config.dropout,
             device=device,
@@ -224,6 +234,7 @@ def train(
             latent_dim=config.latent_dimension,
             classify=config.classify,
             contrastive=config.contrastive,
+            InfoNCEWeight=config.InfoNCEWeight,
             num_layers_target=config.num_layers_target,
             dropout=config.dropout,
             args=config
