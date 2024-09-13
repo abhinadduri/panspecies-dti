@@ -257,7 +257,7 @@ class DrugTargetCoembeddingLightning(pl.LightningModule):
             nn.init.xavier_normal_(self.drug_projector[-6].weight)
 
             protein_projector = nn.Sequential(
-                Learned_Aggregation_Layer(self.target_dim, attn_drop=dropout, proj_drop=dropout, num_heads=self.args.num_heads),
+                Learned_Aggregation_Layer(self.target_dim, attn_drop=dropout, proj_drop=dropout, num_heads=self.args.num_heads_agg),
                 nn.LayerNorm(self.target_dim),
                 self.activation(),
                 nn.Linear(self.target_dim, self.latent_dim),

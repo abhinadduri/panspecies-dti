@@ -14,14 +14,15 @@ from pathlib import Path
 import argparse
 
 from ultrafast.datamodules import (
-        get_task_dir,
-        DTIDataModule,
-        DTIStructDataModule,
-        TDCDataModule,
-        DUDEDataModule,
-        EnzPredDataModule,
-        CombinedDataModule,
-        )
+    get_task_dir,
+    DTIDataModule,
+    DTIStructDataModule,
+    TDCDataModule,
+    DUDEDataModule,
+    EnzPredDataModule,
+    CombinedDataModule,
+    MergedDataModule
+)
 from ultrafast.model import DrugTargetCoembeddingLightning
 from ultrafast.utils import get_featurizer, xavier_normal
 
@@ -38,6 +39,7 @@ def train_cli():
         "biosnap_prot",
         "biosnap_mol",
         "dti_dg",
+        "merged",
         ], type=str, help="Task name. Could be biosnap, bindingdb, davis, biosnap_prot, biosnap_mol, dti_dg.",
     )
     parser.add_argument("--drug-featurizer", help="Drug featurizer", dest="drug_featurizer")
@@ -94,6 +96,7 @@ def train(
     batch_size: int,
     no_wandb: bool,
     num_heads_agg: int,
+    model_size: str,
 ):
     args = argparse.Namespace(
         experiment_id=experiment_id,
@@ -121,6 +124,7 @@ def train(
         batch_size=batch_size,
         no_wandb=no_wandb,
         num_heads_agg=num_heads_agg,
+        model_size=model_size,
     )
     config = OmegaConf.load(args.config)
     args_overrides = {k: v for k, v in vars(args).items() if v is not None}
@@ -210,6 +214,8 @@ def train(
 
     if config.task != 'merged':
         datamodule.prepare_data() # this task is already setup
+    else:
+        datamodule = MergedDataModule(**task_dm_kwargs)
     datamodule.setup()
 
     # Load model
@@ -248,22 +254,29 @@ def train(
         if hasattr(wandb_logger.experiment.config, 'update'):
             wandb_logger.experiment.config.update(OmegaConf.to_container(config, resolve=True, throw_on_missing=True))
 
-    checkpoint_callback = pl.callbacks.ModelCheckpoint(monitor=config.watch_metric, mode="max", filename=config.task,
-                                                       dirpath=save_dir, verbose=True)
+    checkpoint_callback = pl.callbacks.ModelCheckpoint(
+        monitor=config.watch_metric,
+        mode="max",
+        filename=config.task,
+        dirpath=save_dir,
+        verbose=True
+    )
+
     # Train model
     trainer = pl.Trainer(
-            accelerator="auto",
-            devices="auto",
-            strategy="ddp",
-            logger=wandb_logger if not config.no_wandb else None,
-            max_epochs=config.epochs,
-            callbacks=[checkpoint_callback],
-            reload_dataloaders_every_n_epochs=1 if config.contrastive else 0,
-            )
+        accelerator="auto",
+        devices="auto",
+        strategy="auto",
+        logger=wandb_logger if not config.no_wandb else None,
+        max_epochs=config.epochs,
+        callbacks=[checkpoint_callback],
+        reload_dataloaders_every_n_epochs=1 if config.contrastive else 0,
+    )
+
     trainer.fit(
-            model,
-            datamodule=datamodule,
-            )
+        model,
+        datamodule=datamodule,
+    )
 
     # Test model using best weights
     trainer.test(datamodule=datamodule, ckpt_path=checkpoint_callback.best_model_path)

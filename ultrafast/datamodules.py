@@ -14,6 +14,7 @@ from sklearn.model_selection import KFold, train_test_split
 from tdc.benchmark_group import dti_dg_group
 from torch.utils.data import Dataset, DataLoader
 from torch.nn.utils.rnn import pad_sequence
+from typing import Optional
 from ultrafast.featurizers import Featurizer
 
 def get_task_dir(task_name: str):
@@ -41,6 +42,7 @@ def get_task_dir(task_name: str):
         "kinase": "./data/EnzPred/davis_filtered",
         "phosphatase": "./data/EnzPred/phosphatase_chiral_binary",
         "leash": "./data/leash/",
+        "merged": "./data/MERGED/huge_data",
     }
 
     return Path(task_paths[task_name.lower()]).resolve()
@@ -1011,7 +1013,7 @@ class LeashDataModule(pl.LightningDataModule):
             )
 
 class MergedDataset(Dataset):
-    def__init__(self, split, drug_db, target_db, neg_sample_ratio=1.0):
+    def __init__(self, split, drug_db, target_db, neg_sample_ratio=1):
         """
         Constructor for the merged dataset, pooling DTI data from PubChem, BindingDB, and ChEMBL.
 
@@ -1120,53 +1122,62 @@ class MergedDataModule(pl.LightningDataModule):
         index_col=0,
         sep=",",
     ):
+        super().__init__()
+        self._loader_kwargs = {
+            "batch_size": batch_size,
+            "shuffle": shuffle,
+            "num_workers": num_workers,
+            "collate_fn": drug_target_collate_fn,
+        }
 
-    super().__init__()
-    self._loader_kwargs = {
-        "batch_size": batch_size,
-        "shuffle": shuffle,
-        "num_workers": num_workers,
-        "collate_fn": drug_target_collate_fn,
-    }
+        # Load in the ID to SMILES and ID to target sequence files
+        self.id_to_smiles = np.load('data/MERGED/huge_data/id_to_smiles.npy', allow_pickle=True).item()
+        self.id_to_target = np.load('data/MERGED/huge_data/id_to_sequence.npy', allow_pickle=True).item()
 
-    # Load in the ID to SMILES and ID to target sequence files
-    self.id_to_smiles = np.load('data/MERGED/huge_data/id_to_smiles.npy', allow_pickle=True).item()
-    self.id_to_target = np.load('data/MERGED/huge_data/id_to_sequence.npy', allow_pickle=True).item()
+        id_list = []
+        for k in list(self.id_to_target.keys()):
+            if any(char.isdigit() for char in self.id_to_target[k]):
+                continue
+            id_list.append(k)
 
-    id_list = []
-    for k in list(self.id_to_target.keys()):
-        if any(char.isdigit() for char in self.id_to_target[k]):
-            continue
-        id_list.append(k)
+        self.id_to_target = {k: self.id_to_target[k] for k in id_list}
+        self.id_list = id_list
 
-    self.id_to_target = {k: self.id_to_target[k] for k in id_list}
-    self.id_list = id_list
+        # connect the db id to the lmdb index
+        self.id_to_drug_lmdb = {db_id: lmdb_id for lmdb_id, db_id in enumerate(self.id_to_smiles.keys())}
+        self.id_to_prot_lmdb = {db_id: lmdb_id for lmdb_id, db_id in enumerate(id_list)}
 
-    # connect the db id to the lmdb index
-    self.id_to_drug_lmdb = {db_id: lmdb_id for lmdb_id, db_id in enumerate(self.id_to_smiles.keys())}
-    self.id_to_prot_lmdb = {db_id: lmdb_id for lmdb_id, db_id in enumerate(id_list)}
+        self.drug_featurizer = drug_featurizer
+        self.target_featurizer = target_featurizer
 
-    self.drug_featurizer = drug_featurizer
-    self.target_featurizer = target_featurizer
+        self.test_size = test_size
+        self.val_size = val_size
+        self.random_state = random_state
 
-    self.test_size = test_size
-    self.val_size = val_size
-    self.random_state = random_state
-
-    self.drug_db = px.Reader(dirpath='data/MERGED/huge_data/smiles.lmdb', lock=False) # we only read
-    self.target_db = px.Reader(dirpath='data/MERGED/huge_data/targets.lmdb', lock=False)
+        # these get initialized in setup
+        self.drug_db = None
+        self.target_db = None
 
     def setup(self, stage: Optional[str] = None):
         # Process drug and target databases if not already processed
         # this stores featurizations for the given ligand ids and target ids into LMDB files
-        self.drug_featurizer.process_merged_drugs(self.id_to_smiles)
-        self.target_featurizer.process_merged_targets(self.id_to_target)
+        smiles_lmdb = 'data/MERGED/huge_data/smiles.lmdb'
+        target_lmdb = f'data/MERGED/huge_data/{self.target_featurizer.name}_targets.lmdb'
+        if not os.path.exists(smiles_lmdb):
+            self.drug_featurizer.process_merged_drugs(self.id_to_smiles)
+        if not os.path.exists(target_lmdb):
+            self.target_featurizer.process_merged_targets(self.id_to_target)
+
+        self.drug_db = px.Reader(dirpath=smiles_lmdb, lock=False) # we only read
+        self.target_db = px.Reader(dirpath=target_lmdb, lock=False)
 
         if stage == "fit" or stage is None:
             self.data_train = MergedDataset('train', self.drug_db, self.target_db)
             self.data_val = MergedDataset('val', self.drug_db, self.target_db)
         if stage == "test" or stage is None:
             self.data_test = MergedDataset('test', self.drug_db, self.target_db)
+
+
 
     def train_dataloader(self):
         return DataLoader(self.data_train, **self._loader_kwargs, pin_memory=True)

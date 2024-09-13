@@ -9,6 +9,7 @@ import datamol as dm
 import esm
 import requests
 import os
+import pyxis as px
 
 from functools import partial
 from molfeat.trans.pretrained.hf_transformers import PretrainedHFTransformer
@@ -239,7 +240,7 @@ class Featurizer:
         This function is intended to featurize the huge database file, and should not be used for any other database.
         """
 
-        lmdb_path = 'data/MERGED/huge_data/targets.lmdb'
+        lmdb_path = f'data/MERGED/huge_data/{self.name}_targets.lmdb'
         if os.path.exists(lmdb_path):
             print(f"File {lmdb_path} exists, skipping processing protein targets.")
             return
