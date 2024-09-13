@@ -12,6 +12,8 @@ pip install -e .
 # Or install directly from pip
 install git+https://github.com/abhinadduri/panspecies-dti.git
 ```
+If you want to use DDP for faster training, first follow the above installation instructions.
+Then manually downgrade lightning to 2.0.8 via `pip install lightning==2.0.8`
 
 # Train a model
 Reproducing the drug-target interaction model in the MLCB 2024 abstract.

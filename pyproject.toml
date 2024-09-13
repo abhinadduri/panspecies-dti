@@ -22,7 +22,7 @@ dependencies = [
     "datamol==0.12.5",
     "fair-esm==2.0.0",
     "molfeat==0.10.1",
-    "transformers==4.43.4",
+    "tratnsformers==4.43.4",
     # "transformers==4.30.2",
     "chromadb==0.5.5",
     "pyxis==0.2.1",
@@ -36,6 +36,6 @@ ultrafast-embed = "ultrafast.embed:embed_cli"
 ultrafast-store = "ultrafast.store:store_cli"
 ultrafast-report = "ultrafast.report:report_cli"
 
-[tool.setuptools]
-packages = ["ultrafast"] 
+[tool.setuptools ]
+packages= ["ultrafast"] 
 include-package-data = true
