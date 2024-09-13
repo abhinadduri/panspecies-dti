@@ -63,6 +63,7 @@ def train_cli():
     parser.add_argument("--num-heads-agg", type=int, default=4, help="Number of attention heads for learned aggregation", dest="num_heads_agg")
     parser.add_argument("--dropout", type=float, help="Dropout rate for transformer", dest="dropout")
     parser.add_argument("--batch-size", type=int, default=32, help="batch size for training/val/test")
+    parser.add_argument("--num-workers", type=int, default=0, help="number of workers for intial data processing and dataloading during training")
     parser.add_argument("--no-wandb", action="store_true", help="Do not use wandb")
     parser.add_argument("--model-size", default="small", choices=["small", "large"], help="Choose the size of the model")
 
@@ -94,6 +95,7 @@ def train(
     drug_layers: int,
     dropout: float,
     batch_size: int,
+    num_workers: int,
     no_wandb: bool,
     num_heads_agg: int,
     model_size: str,
@@ -122,6 +124,7 @@ def train(
         drug_layers=drug_layers,
         dropout=dropout,
         batch_size=batch_size,
+        num_workers=num_workers,
         no_wandb=no_wandb,
         num_heads_agg=num_heads_agg,
         model_size=model_size,
@@ -148,7 +151,8 @@ def train(
     print("Preparing DataModule")
     task_dir = get_task_dir(config.task)
 
-    drug_featurizer = get_featurizer(config.drug_featurizer, save_dir=task_dir)
+    drug_featurizer = get_featurizer(config.drug_featurizer, save_dir=task_dir, n_jobs=config.num_workers)
+
     target_featurizer = get_featurizer(config.target_featurizer, save_dir=task_dir)
 
     # Set up task dm arguments

@@ -309,7 +309,7 @@ class Featurizer:
             self._preloaded = True
 
 class ChemGPTFeaturizer(Featurizer):
-    def __init__(self, shape: int = 768, save_dir: Path = Path().absolute(), ext: str = "h5", batch_size: int = 32):
+    def __init__(self, shape: int = 768, save_dir: Path = Path().absolute(), ext: str = "h5", batch_size: int = 32, n_jobs=-1):
         super().__init__("RoBertaZinc", shape, save_dir, ext, batch_size)
         self.transformer = PretrainedHFTransformer(kind='Roberta-Zinc480M-102M', notation='selfies', dtype=float, device=self._device)
 
@@ -413,6 +413,7 @@ class ProtBertFeaturizer(Featurizer):
         super().__init__("ProtBert", 1024, save_dir)
 
 
+        self._device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
         self._max_len = 1024
         self.per_tok = per_tok
 
@@ -429,6 +430,7 @@ class ProtBertFeaturizer(Featurizer):
             "feature-extraction",
             model=self._protbert_model,
             tokenizer=self._protbert_tokenizer,
+            device=self._device,
         )
 
         self._register_cuda("model", self._protbert_model)
@@ -437,6 +439,7 @@ class ProtBertFeaturizer(Featurizer):
         )
 
     def _feat_to_device(self, pipe, device):
+        self._device = device
 
         if device.type == "cpu":
             d = -1
