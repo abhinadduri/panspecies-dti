@@ -49,6 +49,7 @@ def train_cli():
     parser.add_argument("--CEWeight", "-C", default=1.0, type=float, help="Cross Entropy loss weight", dest="CEWeight")
     parser.add_argument("--InfoNCEWeight","-I", type=float, help="InfoNCE loss weight", dest="InfoNCEWeight")
     parser.add_argument("--InfoNCETemp", "-T", type=float, help="InfoNCE temperature", dest="InfoNCETemp")
+    parser.add_argument("--KoLeo", type=float, default=0, help="KoLeo loss weight", dest="KoLeo")
     parser.add_argument("--r", "--replicate", type=int, help="Replicate", dest="replicate")
     parser.add_argument("--d", "--device", default=0, type=int, help="CUDA device", dest="device")
     parser.add_argument("--verbosity", type=int, help="Level at which to log", dest="verbosity")
@@ -81,6 +82,7 @@ def train(
     CEWeight: float,
     InfoNCEWeight: float,
     InfoNCETemp: float,
+    KoLeo: float,
     replicate: int,
     device: int,
     verbosity: int,
@@ -108,6 +110,7 @@ def train(
         CEWeight=CEWeight,
         InfoNCEWeight=InfoNCEWeight,
         InfoNCETemp=InfoNCETemp,
+        KoLeo=KoLeo,
         replicate=replicate,
         device=device,
         verbosity=verbosity,

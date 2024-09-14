@@ -3,6 +3,7 @@ import wandb
 from torch import nn
 import torch.nn.functional as F
 from ultrafast.contrastive_loss import MarginScheduledLossFunction, InfoNCELoss
+from ultrafast.loss import KoLeoLoss
 
 import pytorch_lightning as pl
 import torchmetrics
@@ -279,6 +280,12 @@ class DrugTargetCoembeddingLightning(pl.LightningModule):
             self.infoNCE_loss_fct = InfoNCELoss(temperature=args.InfoNCETemp if 'InfoNCETemp' in args else 0.5) 
 
         self.CEWeight = 1 if 'CEWeight' not in args else args.CEWeight
+
+        self.KoLeoLoss = 0
+        if 'KoLeo' in args and args.KoLeo:
+            self.koleo_loss_drug = KoLeoLoss()
+            self.koleo_loss_prot = KoLeoLoss()
+            self.KoLeoLoss = args.KoLeo
                     
 
         self.save_hyperparameters()
@@ -348,11 +355,14 @@ class DrugTargetCoembeddingLightning(pl.LightningModule):
         infoloss = 0
         if self.InfoNCEWeight > 0:
             infoloss = self.InfoNCEWeight * self.infoNCE_loss_fct(drug, protein, label)
+        regloss = 0
+        if self.KoLeoLoss > 0:
+            regloss = self.KoLeoLoss * (self.koleo_loss_drug(drug) + self.koleo_loss_prot(protein))
 
         if train:
-            return loss * self.CEWeight, infoloss
+            return loss * self.CEWeight, infoloss, regloss
         else:
-            return loss, infoloss, similarity
+            return loss, infoloss, regloss, similarity
 
     def training_step(self, batch, batch_idx):
         if self.contrastive and self.current_epoch % 2 == 1:
@@ -368,12 +378,14 @@ class DrugTargetCoembeddingLightning(pl.LightningModule):
             else:
                 opt = self.optimizers()
             opt.zero_grad()
-            loss,infoloss = self.non_contrastive_step(batch)
-            self.manual_backward(loss+infoloss)
+            loss,infoloss,regloss = self.non_contrastive_step(batch)
+            self.manual_backward(loss+infoloss+regloss)
             opt.step()
             self.log("train/loss", loss, sync_dist=True if self.trainer.num_devices > 1 else False)
             if self.InfoNCEWeight > 0:
                 self.log("train/info_loss", infoloss, sync_dist=True if self.trainer.num_devices > 1 else False)
+            if self.KoLeoLoss > 0:
+                self.log("train/reg_loss", regloss, sync_dist=True if self.trainer.num_devices > 1 else False)
 
         return loss
 
@@ -396,10 +408,12 @@ class DrugTargetCoembeddingLightning(pl.LightningModule):
         if self.global_step == 0 and self.global_rank == 0 and not self.args.no_wandb:
             wandb.define_metric("val/aupr", summary="max")
         _, _, label = batch
-        loss, infoloss, similarity = self.non_contrastive_step(batch, train=False)
+        loss, infoloss, regloss, similarity = self.non_contrastive_step(batch, train=False)
         self.log("val/loss", loss, sync_dist=True if self.trainer.num_devices > 1 else False)
         if self.InfoNCEWeight > 0:
             self.log("val/info_loss", infoloss, sync_dist=True if self.trainer.num_devices > 1 else False)
+        if self.KoLeoLoss > 0:
+            self.log("val/reg_loss", regloss, sync_dist=True if self.trainer.num_devices > 1 else False)
 
         self.val_step_outputs.extend(similarity)
         self.val_step_targets.extend(label)
@@ -419,7 +433,7 @@ class DrugTargetCoembeddingLightning(pl.LightningModule):
 
     def test_step(self, batch, batch_idx):
         _, _, label = batch
-        _, _, similarity = self.non_contrastive_step(batch, train=False)
+        _, _, _, similarity = self.non_contrastive_step(batch, train=False)
 
         self.test_step_outputs.extend(similarity)
         self.test_step_targets.extend(label)

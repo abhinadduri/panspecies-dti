@@ -9,6 +9,7 @@ latent_distance: "Cosine"
 loss_type: "CE"
 prot_proj: "agg"
 num_layers_target: 1
+drug_layers: 1
 dropout: 0.05
 
 batch_size: 32
