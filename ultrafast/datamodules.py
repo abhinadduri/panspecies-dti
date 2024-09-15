@@ -23,6 +23,7 @@ def get_task_dir(task_name: str):
     """
 
     task_paths = {
+        "unittest": "./data/unittest_dummy_data",
         "biosnap": "./data/BIOSNAP/full_data",
         "biosnap_prot": "./data/BIOSNAP/unseen_protein",
         "biosnap_mol": "./data/BIOSNAP/unseen_drug",
