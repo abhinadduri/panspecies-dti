@@ -25,6 +25,8 @@ clr_t0: 10
 margin_fn: 'tanh_decay'
 margin_max: 0.25
 margin_t0: 10
+InfoNCEWeight: 0.0
+drug_layers: 1
 
 replicate: 0
 verbosity: 3
