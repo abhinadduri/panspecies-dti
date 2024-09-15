@@ -22,7 +22,7 @@ dependencies = [
     "datamol==0.12.5",
     "fair-esm==2.0.0",
     "molfeat==0.10.1",
-    "transformers==4.30.2",
+    "transformers==4.43.4",
 ]
 
 [project.scripts]
