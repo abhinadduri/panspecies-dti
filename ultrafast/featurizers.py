@@ -320,7 +320,7 @@ class MorganFeaturizer(Featurizer):
             return torch.stack(all_feats, dim=0)
 
 class ProtBertFeaturizer(Featurizer):
-    def __init__(self, save_dir: Path = Path().absolute(), per_tok=False):
+    def __init__(self, save_dir: Path = Path().absolute(), per_tok=False, **kwargs):
         super().__init__("ProtBert", 1024, save_dir)
 
 
