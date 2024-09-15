@@ -26,8 +26,21 @@ The example script above will generate ProtBert and store ProtBert per-residue e
 
 The goal to start attention pooling training is to run the above script on all nested `*.csv` files with protein sequences in the data folder.
 
+# Download pre-trained model
+Links to download pre-trained models are in `checkpoints/README.md`.
+
+Once downloaded, just `gunzip` the file to get the ready-to-use model checkpoint.
+
 # Embed proteins and molecules
 ```
 # Get embeddings with pre-trained model
-ultrafast-embed --data-file data/BIOSNAP/full_data/train.csv --checkpoint <your_checkpoint>.ckpt --output_path results/embeddings.npy
+ultrafast-embed --data-file data/BIOSNAP/full_data/train.csv  \
+    --checkpoint checkpoints/saprot_agg_contrast_biosnap_maxf1.ckpt \
+    --output_path results/embeddings.npy
 ```
+
+# Check top-k accuracy of the model using test data
+TODO
+
+# Predict new drug-target interactions
+TODO
