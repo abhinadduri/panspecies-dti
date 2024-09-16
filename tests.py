@@ -9,7 +9,7 @@ class TestDefaults(unittest.TestCase):
         cmd = 'ultrafast-train --config configs/unittest_config.yaml --exp-id unittest --epochs 1 --no-wandb'
         sys.argv = cmd.split()
         train_cli()
-        assert os.path.exists('best_models/temp/davis.ckpt')
+        assert os.path.exists('best_models/unittest/davis.ckpt')
     
     def test_embed_default(self):
         cmd = 'ultrafast-train --config configs/unittest_config.yaml --exp-id unittest --epochs 1 --no-wandb'
