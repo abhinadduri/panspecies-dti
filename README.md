@@ -46,22 +46,22 @@ ultrafast-embed --data-file data/BIOSNAP/full_data/test.csv  \
     --output_path results/BIOSNAP_test_drug_embeddings.npy
 ```
 
-# Make a vector database of targets
+# Make a vector database of drugs
 ```
 ultrafast-store --data-file data/BIOSNAP/full_data/test.csv  \
-    --embeddings results/BIOSNAP_test_target_embeddings.npy \
-    --moltype target \
-    --db_dir ./dbs \
-    --db_name biosnap_test_target_embeddings
-```
-
-# Report top-k accuracy
-```
-ultrafast-report --data-file data/BIOSNAP/full_data/test.csv  \
     --embeddings results/BIOSNAP_test_drug_embeddings.npy \
     --moltype drug \
     --db_dir ./dbs \
-    --db_name biosnap_test_target_embeddings \
+    --db_name biosnap_test_drug_embeddings
+```
+
+# Report top-k accuracy by querying targets against the drug database
+```
+ultrafast-report --data-file data/BIOSNAP/full_data/test.csv  \
+    --embeddings results/BIOSNAP_test_target_embeddings.npy \
+    --moltype target \
+    --db_dir ./dbs \
+    --db_name biosnap_test_drug_embeddings \
     --topk 100
 ```
 
