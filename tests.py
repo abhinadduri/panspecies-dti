@@ -29,7 +29,7 @@ class TestDefaults(unittest.TestCase):
         cmd = 'ultrafast-embed --data-file data/unittest_dummy_data/train.csv  --checkpoint best_models/unittest/unittest.ckpt --output_path results/embeddings.npy'
         sys.argv = cmd.split()
         embed_cli()
-        cmd = 'ultrafast-store --data-file data/unittest_dummy_data/train.csv --embeddings results/embeddings.npy --moltype drug --db_dir ./dbs --db_name unittest'
+        cmd = 'ultrafast-store --data-file data/unittest_dummy_data/train.csv --embeddings results/embeddings.npy --moltype drug --db_dir ./dbs --db_name unittest_test_drug_embeddings'
         sys.argv = cmd.split()
         store_cli()
         client = chromadb.PersistentClient(path="./dbs")
