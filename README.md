@@ -33,14 +33,37 @@ Once downloaded, just `gunzip` the file to get the ready-to-use model checkpoint
 
 # Embed proteins and molecules
 ```
-# Get embeddings with pre-trained model
-ultrafast-embed --data-file data/BIOSNAP/full_data/train.csv  \
+# Get target embeddings with pre-trained model
+ultrafast-embed --data-file data/BIOSNAP/full_data/test.csv  \
     --checkpoint checkpoints/saprot_agg_contrast_biosnap_maxf1.ckpt \
-    --output_path results/embeddings.npy
+    --moltype target \ 
+    --output_path results/BIOSNAP_test_target_embeddings.npy
+
+# Get drug embeddings with pre-trained model
+ultrafast-embed --data-file data/BIOSNAP/full_data/test.csv  \
+    --checkpoint checkpoints/saprot_agg_contrast_biosnap_maxf1.ckpt \
+    --moltype drug \ 
+    --output_path results/BIOSNAP_test_drug_embeddings.npy
 ```
 
-# Check top-k accuracy of the model using test data
-TODO
+# Make a vector database of targets
+```
+ultrafast-store --data-file data/BIOSNAP/full_data/test.csv  \
+    --embeddings results/BIOSNAP_test_target_embeddings.npy \
+    --moltype target \
+    --db_dir ./dbs \
+    --db_name biosnap_test_target_embeddings
+```
+
+# Report top-k accuracy
+```
+ultrafast-report --data-file data/BIOSNAP/full_data/test.csv  \
+    --embeddings results/BIOSNAP_test_drug_embeddings.npy \
+    --moltype drug \
+    --db_dir ./dbs \
+    --db_name biosnap_test_target_embeddings \
+    --topk 100
+```
 
 # Predict new drug-target interactions
 TODO
