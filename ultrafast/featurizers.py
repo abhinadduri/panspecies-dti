@@ -50,7 +50,7 @@ class Featurizer:
         self._save_path = save_dir / Path(f"{self._name}_features.{ext}")
 
         self._preloaded = False
-        self._device = torch.device("cpu")
+        self._device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
         self._cuda_registry = {}
         self._on_cuda = False
         self._features = {}
@@ -256,7 +256,7 @@ class Featurizer:
         db = px.Writer(dirpath=lmdb_path, map_size_limit=100000, ram_gb_limit=10)
 
         # For each batch, featurize them, e.g., call self.transform on a list of sequence
-        batch_size = 32
+        batch_size = 16
         for i in tqdm(range(0, len(id_list), batch_size)):
             batch_ids = np.array(id_list[i:i+batch_size])
             # id to target is uniprot to aaseq
@@ -512,7 +512,7 @@ class ESM2Featurizer(Featurizer):
 
             return token_embeddings[0, 1:].squeeze(0)  # Return the full sequence embedding
         except Exception as e:
-            print(f"Error featurizing single sequence: {e}")
+            print(f"Error featurizing single sequence: {seq}")
             return torch.zeros((len(seq), self.shape)) # zero vector for each token
 
     def _transform(self, seqs: List[str]) -> List[torch.Tensor]:
@@ -564,10 +564,12 @@ class SaProtFeaturizer(Featurizer):
             
         self.model, self.alphabet = load_esm_saprot(model_path)
         self.batch_converter = self.alphabet.get_batch_converter()
+
+        self._device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
         
         # Move model to GPU if available
+        self.model = self.model.to(self._device)
         self.model.eval()  # Set the model to evaluation mode
-        self.model.cuda() if torch.cuda.is_available() else self.model.cpu()
 
     def _transform_single(self, seq: str) -> torch.Tensor:
         seq = SaProtFeaturizer.prepare_string(seq)
@@ -582,7 +584,7 @@ class SaProtFeaturizer(Featurizer):
 
             return token_embeddings[0, 1:].squeeze(0)  # Return the full sequence embedding
         except Exception as e:
-            print(f"Error featurizing single sequence: {e}")
+            print(f"Error featurizing single sequence: {seq}")
             return torch.zeros((len(seq), self.shape)) # zero vector for each token
 
     def _transform(self, seqs: List[str]) -> List[torch.Tensor]:

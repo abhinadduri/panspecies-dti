@@ -236,11 +236,11 @@ class DrugTargetCoembeddingLightning(pl.LightningModule):
 
         if args.model_size == "large":  # override the above settings and use a large model for drug and target
             self.drug_projector = nn.Sequential(
-                nn.Linear(self.drug_dim, self.latent_dim),
+                nn.Linear(self.drug_dim, 1260),
                 self.activation(),
                 nn.Dropout(dropout),
-                nn.BatchNorm1d(self.latent_dim),
-                nn.Linear(self.latent_dim, self.latent_dim),
+                nn.BatchNorm1d(1260),
+                nn.Linear(1260, self.latent_dim),
                 self.activation(),
                 nn.Dropout(dropout),
                 nn.BatchNorm1d(self.latent_dim),

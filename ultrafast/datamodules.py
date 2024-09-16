@@ -1013,7 +1013,7 @@ class LeashDataModule(pl.LightningDataModule):
             )
 
 class MergedDataset(Dataset):
-    def __init__(self, split, drug_db, target_db, neg_sample_ratio=1):
+    def __init__(self, split, drug_db, target_db, id_to_smiles, id_to_target, neg_sample_ratio=1):
         """
         Constructor for the merged dataset, pooling DTI data from PubChem, BindingDB, and ChEMBL.
 
@@ -1024,10 +1024,10 @@ class MergedDataset(Dataset):
         self.split = split
         self.neg_sample_ratio = neg_sample_ratio
 
-        # Load ligand ID to smiles mapping
-        self.id_to_smiles = np.load('data/MERGED/huge_data/id_to_smiles.npy', allow_pickle=True).item()
-        # Load ligand ID to smiles mapping
-        self.id_to_target = np.load('data/MERGED/huge_data/id_to_sequence.npy', allow_pickle=True).item()
+        # Ligand ID to smiles mapping
+        self.id_to_smiles = id_to_smiles
+        # Target ID to smiles mapping
+        self.id_to_target = id_to_target
 
         id_list = []
         for k in list(self.id_to_target.keys()):
@@ -1111,7 +1111,7 @@ class MergedDataModule(pl.LightningDataModule):
         data_dir: str,
         drug_featurizer: Featurizer,
         target_featurizer: Featurizer,
-        device: torch.device = torch.device("cpu"),
+        device: torch.device("cuda"),
         batch_size: int = 32,
         shuffle: bool = True,
         num_workers: int = 16,
@@ -1130,9 +1130,15 @@ class MergedDataModule(pl.LightningDataModule):
             "collate_fn": drug_target_collate_fn,
         }
 
+        self.drug_featurizer = drug_featurizer
+        self.target_featurizer = target_featurizer
+
         # Load in the ID to SMILES and ID to target sequence files
         self.id_to_smiles = np.load('data/MERGED/huge_data/id_to_smiles.npy', allow_pickle=True).item()
-        self.id_to_target = np.load('data/MERGED/huge_data/id_to_sequence.npy', allow_pickle=True).item()
+        if self.target_featurizer.name == "SaProt":
+            self.id_to_target = np.load('data/MERGED/huge_data/id_to_saprot_sequence.npy', allow_pickle=True).item()
+        else:
+            self.id_to_target = np.load('data/MERGED/huge_data/id_to_sequence.npy', allow_pickle=True).item()
 
         id_list = []
         for k in list(self.id_to_target.keys()):
@@ -1147,9 +1153,6 @@ class MergedDataModule(pl.LightningDataModule):
         self.id_to_drug_lmdb = {db_id: lmdb_id for lmdb_id, db_id in enumerate(self.id_to_smiles.keys())}
         self.id_to_prot_lmdb = {db_id: lmdb_id for lmdb_id, db_id in enumerate(id_list)}
 
-        self.drug_featurizer = drug_featurizer
-        self.target_featurizer = target_featurizer
-
         self.test_size = test_size
         self.val_size = val_size
         self.random_state = random_state
@@ -1163,19 +1166,18 @@ class MergedDataModule(pl.LightningDataModule):
         # this stores featurizations for the given ligand ids and target ids into LMDB files
         smiles_lmdb = 'data/MERGED/huge_data/smiles.lmdb'
         target_lmdb = f'data/MERGED/huge_data/{self.target_featurizer.name}_targets.lmdb'
-        if not os.path.exists(smiles_lmdb):
-            self.drug_featurizer.process_merged_drugs(self.id_to_smiles)
-        if not os.path.exists(target_lmdb):
-            self.target_featurizer.process_merged_targets(self.id_to_target)
+
+        self.drug_featurizer.process_merged_drugs(self.id_to_smiles)
+        self.target_featurizer.process_merged_targets(self.id_to_target)
 
         self.drug_db = px.Reader(dirpath=smiles_lmdb, lock=False) # we only read
         self.target_db = px.Reader(dirpath=target_lmdb, lock=False)
 
         if stage == "fit" or stage is None:
-            self.data_train = MergedDataset('train', self.drug_db, self.target_db)
-            self.data_val = MergedDataset('val', self.drug_db, self.target_db)
+            self.data_train = MergedDataset('train', self.drug_db, self.target_db, self.id_to_smiles, self.id_to_target)
+            self.data_val = MergedDataset('val', self.drug_db, self.target_db, self.id_to_smiles, self.id_to_target)
         if stage == "test" or stage is None:
-            self.data_test = MergedDataset('test', self.drug_db, self.target_db)
+            self.data_test = MergedDataset('test', self.drug_db, self.target_db, self.id_to_smiles, self.id_to_target)
 
 
 
