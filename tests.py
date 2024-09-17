@@ -37,7 +37,7 @@ class TestDefaults(unittest.TestCase):
         # Check if the collection exists
         assert 'unittest_test_drug_embeddings' in collection_names
         # Check if the collection has the correct number of documents
-        collection = client.get_collection(name='unittest')
+        collection = client.get_collection(name='unittest_test_drug_embeddings')
         assert collection.count() == 5
 
 
