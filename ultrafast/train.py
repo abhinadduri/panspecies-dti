@@ -66,7 +66,7 @@ def train_cli():
     parser.add_argument("--num-workers", type=int, default=0, help="number of workers for intial data processing and dataloading during training")
     parser.add_argument("--no-wandb", action="store_true", help="Do not use wandb")
     parser.add_argument("--model-size", default="small", choices=["small", "large"], help="Choose the size of the model")
-
+    parser.add_argument("--ship-model", action="store_true", help="Train a final to ship model on all data, only works on merged task.")
 
     args = parser.parse_args()
     train(**vars(args))
@@ -99,6 +99,7 @@ def train(
     no_wandb: bool,
     num_heads_agg: int,
     model_size: str,
+    ship_model: bool,
 ):
     args = argparse.Namespace(
         experiment_id=experiment_id,
@@ -128,6 +129,7 @@ def train(
         no_wandb=no_wandb,
         num_heads_agg=num_heads_agg,
         model_size=model_size,
+        ship_model=ship_model,
     )
     config = OmegaConf.load(args.config)
     args_overrides = {k: v for k, v in vars(args).items() if v is not None}
@@ -174,7 +176,7 @@ def train(
         RuntimeError("EnzPredDataModule not implemented yet")
     else:
         config.classify = True
-        config.watch_metric = "val/f1"
+        config.watch_metric = "val/aupr"
         task_dm_kwargs = {
                 "data_dir": task_dir,
                 "drug_featurizer": drug_featurizer,
@@ -219,7 +221,7 @@ def train(
     if config.task != 'merged':
         datamodule.prepare_data() # this task is already setup
     else:
-        datamodule = MergedDataModule(**task_dm_kwargs)
+        datamodule = MergedDataModule(**task_dm_kwargs, ship_model=ship_model)
     datamodule.setup()
 
     # Load model
@@ -275,15 +277,20 @@ def train(
         max_epochs=config.epochs,
         callbacks=[checkpoint_callback],
         reload_dataloaders_every_n_epochs=1 if config.contrastive else 0,
+        # Disable testing for final model mode
+        limit_test_batches=0 if ship_model else 1.0,
     )
 
-    trainer.fit(
-        model,
-        datamodule=datamodule,
-    )
-
-    # Test model using best weights
-    trainer.test(datamodule=datamodule, ckpt_path=checkpoint_callback.best_model_path)
+    if ship_model:
+        # Train on all data
+        trainer.fit(model, datamodule=datamodule)
+        # Save the final model
+        trainer.save_checkpoint(f"{save_dir}/esm2_ship_model.ckpt")
+    else:
+        # Regular training with validation
+        trainer.fit(model, datamodule=datamodule)
+        # Test model using best weights
+        trainer.test(datamodule=datamodule, ckpt_path=checkpoint_callback.best_model_path)
 
 
 if __name__ == '__main__':

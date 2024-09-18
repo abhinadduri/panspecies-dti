@@ -10,6 +10,7 @@ import esm
 import requests
 import os
 import pyxis as px
+import pandas as pd
 
 from functools import partial
 from molfeat.trans.pretrained.hf_transformers import PretrainedHFTransformer
@@ -308,6 +309,8 @@ class Featurizer:
                 self._features[seq] = feats
             self._preloaded = True
 
+        torch.cuda.empty_cache()
+
 class ChemGPTFeaturizer(Featurizer):
     def __init__(self, shape: int = 768, save_dir: Path = Path().absolute(), ext: str = "h5", batch_size: int = 32, n_jobs=-1):
         super().__init__("RoBertaZinc", shape, save_dir, ext, batch_size)
@@ -493,6 +496,8 @@ class ESM2Featurizer(Featurizer):
         self.model, self.alphabet = esm.pretrained.esm2_t33_650M_UR50D()
         self.batch_converter = self.alphabet.get_batch_converter()
 
+        self._max_len = 1024
+
         # overload default of CPU
         self._device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
         
@@ -517,6 +522,10 @@ class ESM2Featurizer(Featurizer):
 
     def _transform(self, seqs: List[str]) -> List[torch.Tensor]:
         results = []
+        max_seq_len = self._max_len - 2
+        # Truncate sequences if necessary
+        seqs = [seq[:max_seq_len] for seq in seqs]
+
         try:
             data = [("protein", seq) for seq in seqs]
             _, _, batch_tokens = self.batch_converter(data)
@@ -572,8 +581,8 @@ class SaProtFeaturizer(Featurizer):
         self.model.eval()  # Set the model to evaluation mode
 
     def _transform_single(self, seq: str) -> torch.Tensor:
-        seq = SaProtFeaturizer.prepare_string(seq)
         try:
+            seq = SaProtFeaturizer.prepare_string(seq)
             data = [("protein", seq)]
             _, _, batch_tokens = self.batch_converter(data)
             batch_tokens = batch_tokens.to(self._device)
@@ -585,11 +594,16 @@ class SaProtFeaturizer(Featurizer):
             return token_embeddings[0, 1:].squeeze(0)  # Return the full sequence embedding
         except Exception as e:
             print(f"Error featurizing single sequence: {seq}")
-            return torch.zeros((len(seq), self.shape)) # zero vector for each token
+            if isinstance(seq, str):
+                return torch.zeros((len(seq), self.shape)) # zero vector for each token
+            else:
+                return torch.zeros((1, self.shape))
 
     def _transform(self, seqs: List[str]) -> List[torch.Tensor]:
         results = []
         try:
+            seqs = [SaProtFeaturizer.prepare_string(seq) for seq in seqs]
+
             data = [("protein", seq) for seq in seqs]
             _, _, batch_tokens = self.batch_converter(data)
             batch_tokens = batch_tokens.to(self._device)

@@ -1042,10 +1042,28 @@ class MergedDataset(Dataset):
         self.id_to_drug_lmdb = {db_id: lmdb_id for lmdb_id, db_id in enumerate(self.id_to_smiles.keys())}
         self.id_to_prot_lmdb = {db_id: lmdb_id for lmdb_id, db_id in enumerate(id_list)}
 
-        # Load positive and negative interactions
-        self.pos_data = pd.read_csv(f'data/MERGED/huge_data/merged_pos_uniq_{split}_rand.tsv', sep='\t')
-        self.neg_data = pd.read_csv(f'data/MERGED/huge_data/merged_neg_uniq_{split}_rand.tsv', sep='\t')
+        # Exclude some ID's for homology based analysis
+        self.exclusion = set()
+        for line in open('data/MERGED/huge_data/uniprots_excluded_at_90.txt'):
+            self.exclusion.add(line.strip())
 
+        # Load positive and negative interactions
+        if split == 'all':
+            print('Training on all of train / val / test data to ship model.')
+            # Combine all data for final model
+            pos_data_train = pd.read_csv('data/MERGED/huge_data/merged_pos_uniq_train_rand.tsv', sep='\t')
+            pos_data_val = pd.read_csv('data/MERGED/huge_data/merged_pos_uniq_val_rand.tsv', sep='\t')
+            pos_data_test = pd.read_csv('data/MERGED/huge_data/merged_pos_uniq_test_rand.tsv', sep='\t')
+            self.pos_data = pd.concat([pos_data_train, pos_data_val, pos_data_test])
+
+            neg_data_train = pd.read_csv('data/MERGED/huge_data/merged_neg_uniq_train_rand.tsv', sep='\t')
+            neg_data_val = pd.read_csv('data/MERGED/huge_data/merged_neg_uniq_val_rand.tsv', sep='\t')
+            neg_data_test = pd.read_csv('data/MERGED/huge_data/merged_neg_uniq_test_rand.tsv', sep='\t')
+            self.neg_data = pd.concat([neg_data_train, neg_data_val, neg_data_test])
+        else:
+            self.pos_data = pd.read_csv(f'data/MERGED/huge_data/merged_pos_uniq_{split}_rand.tsv', sep='\t')
+            self.neg_data = pd.read_csv(f'data/MERGED/huge_data/merged_neg_uniq_{split}_rand.tsv', sep='\t')
+        
         # Receive drug and target db's from the datamodule. we assume that concurrent reads are ok
         self.drug_db = drug_db
         self.target_db = target_db
@@ -1083,21 +1101,30 @@ class MergedDataset(Dataset):
             label = 0.0
 
         drug_id, aa_id = interaction['ligand'], interaction['aa_seq']
+
+        # aa_id is the uniprot id, simply check and see if this is blacklisted under mmseq threshold.
         drug_id = self.id_to_drug_lmdb[drug_id]
+        drug_features = self.drug_db[drug_id]['feats']
 
-        if aa_id not in self.id_to_prot_lmdb:
-            target_features = np.zeros((1280))
+        # if the uniprot id is to be excluded for homology analysis
+        if self.split == 'all' and aa_id in self.exclusion:
+            drug_features = np.zeros(drug_features.shape, dtype=np.float32)
+            # if this is ProtBert...
+            target_features = np.zeros((1280), dtype=np.float32)
         else:
-            target_entry = self.target_db[self.id_to_prot_lmdb[aa_id]]
-
-            if aa_id in target_entry:
-                target_features = target_entry[aa_id]
+            if aa_id not in self.id_to_prot_lmdb: # if the uniprot id is not in the map
+                target_features = np.zeros((1280), dtype=np.float32)
             else:
-                target_features = np.zeros((1280))
+                target_entry = self.target_db[self.id_to_prot_lmdb[aa_id]]
+
+                if aa_id in target_entry:
+                    target_features = target_entry[aa_id]
+                else:
+                    target_features = np.zeros((1280), dtype=np.float32)
 
         # Fetch the drug and target feature for this idx from LMDB
         return (
-            torch.from_numpy(self.drug_db[drug_id]['feats']), # drug
+            torch.from_numpy(drug_features), # drug
             torch.from_numpy(target_features), # target
             torch.tensor(label, dtype=torch.float32) # label
         )
@@ -1121,6 +1148,7 @@ class MergedDataModule(pl.LightningDataModule):
         header=0,
         index_col=0,
         sep=",",
+        ship_model: bool =False,
     ):
         super().__init__()
         self._loader_kwargs = {
@@ -1132,6 +1160,7 @@ class MergedDataModule(pl.LightningDataModule):
 
         self.drug_featurizer = drug_featurizer
         self.target_featurizer = target_featurizer
+        self.ship_model = ship_model
 
         # Load in the ID to SMILES and ID to target sequence files
         self.id_to_smiles = np.load('data/MERGED/huge_data/id_to_smiles.npy', allow_pickle=True).item()
@@ -1173,34 +1202,38 @@ class MergedDataModule(pl.LightningDataModule):
         self.drug_db = px.Reader(dirpath=smiles_lmdb, lock=False) # we only read
         self.target_db = px.Reader(dirpath=target_lmdb, lock=False)
 
-        if stage == "fit" or stage is None:
-            self.data_train = MergedDataset('train', self.drug_db, self.target_db, self.id_to_smiles, self.id_to_target)
-            self.data_val = MergedDataset('val', self.drug_db, self.target_db, self.id_to_smiles, self.id_to_target)
-        if stage == "test" or stage is None:
+        if self.ship_model:
+            # Combine all data for final model
+            self.data_all = MergedDataset('all', self.drug_db, self.target_db, self.id_to_smiles, self.id_to_target)
             self.data_test = MergedDataset('test', self.drug_db, self.target_db, self.id_to_smiles, self.id_to_target)
-
-
+        else:
+            # Regular setup for train/val/test
+            if stage == "fit" or stage is None:
+                self.data_train = MergedDataset('train', self.drug_db, self.target_db, self.id_to_smiles, self.id_to_target)
+                self.data_val = MergedDataset('val', self.drug_db, self.target_db, self.id_to_smiles, self.id_to_target)
+            if stage == "test" or stage is None:
+                self.data_test = MergedDataset('test', self.drug_db, self.target_db, self.id_to_smiles, self.id_to_target)
 
     def train_dataloader(self):
+        if self.ship_model:
+            return DataLoader(self.data_all, **self._loader_kwargs, pin_memory=True)
         return DataLoader(self.data_train, **self._loader_kwargs, pin_memory=True)
     
     def val_dataloader(self):
+        if self.ship_model:
+            return DataLoader(self.data_test, **self._loader_kwargs, pin_memory=True)
         return DataLoader(self.data_val, **self._loader_kwargs, pin_memory=True)
 
     def test_dataloader(self):
+        if self.ship_model:
+            return []
         return DataLoader(self.data_test, **self._loader_kwargs, pin_memory=True)
+
+    def predict_dataloader(self):
+        if self.ship_model:
+            return DataLoader(self.data_all, **self._loader_kwargs, pin_memory=True)
+        return None
 
     def teardown(self, stage: str):
         self.drug_db.close()
         self.target_db.close()
-
-
-
-
-
-
-
-
-
-
-
