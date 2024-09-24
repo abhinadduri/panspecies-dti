@@ -1013,7 +1013,7 @@ class LeashDataModule(pl.LightningDataModule):
             )
 
 class MergedDataset(Dataset):
-    def __init__(self, split, drug_db, target_db, id_to_smiles, id_to_target, neg_sample_ratio=1):
+    def __init__(self, split, drug_db, target_db, id_to_smiles, id_to_target, tdim=1280, exclusion_file=None, neg_sample_ratio=1):
         """
         Constructor for the merged dataset, pooling DTI data from PubChem, BindingDB, and ChEMBL.
 
@@ -1028,6 +1028,9 @@ class MergedDataset(Dataset):
         self.id_to_smiles = id_to_smiles
         # Target ID to smiles mapping
         self.id_to_target = id_to_target
+
+        # Load the sequence model's embedding dimension
+        self.tdim = tdim
 
         id_list = []
         for k in list(self.id_to_target.keys()):
@@ -1044,8 +1047,9 @@ class MergedDataset(Dataset):
 
         # Exclude some ID's for homology based analysis
         self.exclusion = set()
-        for line in open('data/MERGED/huge_data/uniprots_excluded_at_90.txt'):
-            self.exclusion.add(line.strip())
+        if exclusion_file is not None:
+            for line in open(exclusion_file.strip()):
+                self.exclusion.add(line.strip())
 
         # Load positive and negative interactions
         if split == 'all':
@@ -1109,18 +1113,18 @@ class MergedDataset(Dataset):
         # if the uniprot id is to be excluded for homology analysis
         if self.split == 'all' and aa_id in self.exclusion:
             drug_features = np.zeros(drug_features.shape, dtype=np.float32)
-            # if this is ProtBert...
-            target_features = np.zeros((1280), dtype=np.float32)
+            # if this is not ProtBert...
+            target_features = np.zeros((1, self.tdim), dtype=np.float32)
         else:
             if aa_id not in self.id_to_prot_lmdb: # if the uniprot id is not in the map
-                target_features = np.zeros((1280), dtype=np.float32)
+                target_features = np.zeros((1, self.tdim), dtype=np.float32)
             else:
                 target_entry = self.target_db[self.id_to_prot_lmdb[aa_id]]
 
                 if aa_id in target_entry:
                     target_features = target_entry[aa_id]
                 else:
-                    target_features = np.zeros((1280), dtype=np.float32)
+                    target_features = np.zeros((1, self.tdim), dtype=np.float32)
 
         # Fetch the drug and target feature for this idx from LMDB
         return (
@@ -1141,14 +1145,14 @@ class MergedDataModule(pl.LightningDataModule):
         device: torch.device("cuda"),
         batch_size: int = 32,
         shuffle: bool = True,
-        num_workers: int = 16,
+        num_workers: int = 17,
         test_size: float = 0.1,
         val_size: float = 0.1,
         random_state: int = 42,
         header=0,
         index_col=0,
         sep=",",
-        ship_model: bool =False,
+        ship_model: str = None,
     ):
         super().__init__()
         self._loader_kwargs = {
@@ -1202,17 +1206,18 @@ class MergedDataModule(pl.LightningDataModule):
         self.drug_db = px.Reader(dirpath=smiles_lmdb, lock=False) # we only read
         self.target_db = px.Reader(dirpath=target_lmdb, lock=False)
 
-        if self.ship_model:
-            # Combine all data for final model
-            self.data_all = MergedDataset('all', self.drug_db, self.target_db, self.id_to_smiles, self.id_to_target)
-            self.data_test = MergedDataset('test', self.drug_db, self.target_db, self.id_to_smiles, self.id_to_target)
+        tdim = self.target_featurizer.shape
+
+        if self.ship_model: # Combine all data for final model, while excluding targets specified by `ship_model` 
+            self.data_all = MergedDataset('all', self.drug_db, self.target_db, self.id_to_smiles, self.id_to_target, tdim=tdim, exclusion_file=self.ship_model)
+            self.data_test = MergedDataset('test', self.drug_db, self.target_db, self.id_to_smiles, self.id_to_target, tdim=tdim, exclusion_file=self.ship_model)
         else:
             # Regular setup for train/val/test
             if stage == "fit" or stage is None:
-                self.data_train = MergedDataset('train', self.drug_db, self.target_db, self.id_to_smiles, self.id_to_target)
-                self.data_val = MergedDataset('val', self.drug_db, self.target_db, self.id_to_smiles, self.id_to_target)
+                self.data_train = MergedDataset('train', self.drug_db, self.target_db, self.id_to_smiles, self.id_to_target, tdim=tdim)
+                self.data_val = MergedDataset('val', self.drug_db, self.target_db, self.id_to_smiles, self.id_to_target, tdim=tdim)
             if stage == "test" or stage is None:
-                self.data_test = MergedDataset('test', self.drug_db, self.target_db, self.id_to_smiles, self.id_to_target)
+                self.data_test = MergedDataset('test', self.drug_db, self.target_db, self.id_to_smiles, self.id_to_target, tdim=tdim)
 
     def train_dataloader(self):
         if self.ship_model:

@@ -40,6 +40,7 @@ def embed(
         output_path=output_path,
         batch_size=batch_size
     )
+
     model = DrugTargetCoembeddingLightning.load_from_checkpoint(args.checkpoint)
     model.eval()
     use_cuda = torch.cuda.is_available()

@@ -193,7 +193,7 @@ class DrugTargetCoembeddingLightning(pl.LightningModule):
         drug_dim=2048,
         target_dim=100,
         latent_dim=1024,
-        activation=nn.ReLU,
+        activation=nn.LeakyReLU,
         classify=True,
         num_layers_target=1,
         dropout=0.05,
@@ -234,7 +234,7 @@ class DrugTargetCoembeddingLightning(pl.LightningModule):
         elif args.prot_proj == "agg":
             protein_projector = nn.Sequential(Learned_Aggregation_Layer(self.target_dim, num_heads=self.args.num_heads_agg, attn_drop=dropout, proj_drop=dropout), nn.Linear(self.target_dim, self.latent_dim))
 
-        if args.model_size == "large":  # override the above settings and use a large model for drug and target
+        if 'model_size' in args and args.model_size == "large":  # override the above settings and use a large model for drug and target
             self.drug_projector = nn.Sequential(
                 nn.Linear(self.drug_dim, 1260),
                 self.activation(),
@@ -272,13 +272,47 @@ class DrugTargetCoembeddingLightning(pl.LightningModule):
                 nn.Dropout(dropout),
                 nn.LayerNorm(self.latent_dim),
             )
-        
 
         self.target_projector = nn.Sequential(
             protein_projector,
             self.activation()
         )
 
+        if 'model_size' in args and args.model_size == "huge":  # override the above settings and use a large model for drug and target
+            self.drug_projector = nn.ModuleDict({
+                'proj': nn.Linear(self.drug_dim, 1260),
+                'res': nn.ModuleList([nn.Sequential(nn.Linear(1260, 1260), self.activation(), nn.Dropout(dropout), nn.LayerNorm(1260)) for _ in range(6)]),
+                'out': nn.Linear(1260, self.latent_dim),
+            })
+
+            self.target_projector = nn.ModuleDict({
+                'attn': nn.Sequential(
+                    Attention(self.target_dim, self.args.num_heads_agg, self.target_dim // self.args.num_heads_agg, dropout=dropout),
+                    Learned_Aggregation_Layer(self.target_dim, attn_drop=dropout, proj_drop=dropout, num_heads=self.args.num_heads_agg),
+                ),
+                'proj': nn.Linear(self.target_dim, 1260),
+                'res': nn.ModuleList([nn.Sequential(nn.Linear(1260, 1260), self.activation(), nn.Dropout(dropout), nn.LayerNorm(1260)) for _ in range(4)]),
+                'out': nn.Linear(1260, self.latent_dim),
+            })
+
+        if 'model_size' in args and args.model_size == "mega":  # override the above settings and use a large model for drug and target
+            self.drug_projector = nn.ModuleDict({
+                'proj': nn.Linear(self.drug_dim, 2048),
+                'res': nn.ModuleList([nn.Sequential(nn.Linear(2048, 2048), self.activation(), nn.Dropout(dropout), nn.LayerNorm(2048)) for _ in range(8)]),
+                'out': nn.Linear(2048, self.latent_dim),
+            })
+
+            self.target_projector = nn.ModuleDict({
+                'attn': nn.Sequential(
+                    Attention(self.target_dim, self.args.num_heads_agg, self.target_dim // self.args.num_heads_agg, dropout=dropout),
+                    Attention(self.target_dim, self.args.num_heads_agg, self.target_dim // self.args.num_heads_agg, dropout=dropout),
+                    Learned_Aggregation_Layer(self.target_dim, attn_drop=dropout, proj_drop=dropout, num_heads=self.args.num_heads_agg),
+                ),
+                'proj': nn.Linear(self.target_dim, 2048),
+                'res': nn.ModuleList([nn.Sequential(nn.Linear(2048, 2048), self.activation(), nn.Dropout(dropout), nn.LayerNorm(2048)) for _ in range(6)]),
+                'out': nn.Linear(2048, self.latent_dim),
+            })
+        
         if 'prot_proj' not in args or args.prot_proj == "avg":
             nn.init.xavier_normal_(self.target_projector[0][1].weight)
 
@@ -326,14 +360,30 @@ class DrugTargetCoembeddingLightning(pl.LightningModule):
         self.test_step_targets = []
 
     def forward(self, drug, target):
-        drug_projection = self.drug_projector(drug)
+        model_size = self.args.model_size
+        if model_size == 'huge' or model_size == 'mega':
+            y = self.drug_projector['proj'](drug)
+            for layer in self.drug_projector['res']:
+                y = y + layer(y)
+            drug_projection = self.drug_projector['out'](y)
+        else:
+            drug_projection = self.drug_projector(drug)
+
         # Add a batch dimension if it's missing
         if target.dim() == 2:
             target = target.unsqueeze(0)
-        target_projection = self.target_projector(target)
+
+        if model_size == 'huge' or model_size == 'mega':
+            z = self.target_projector['attn'](target)
+            z = self.target_projector['proj'](z)
+            for layer in self.target_projector['res']:
+                z = z + layer(z)
+            target_projection = self.target_projector['out'](z)
+        else:
+            target_projection = self.target_projector(target)
 
         if self.classify:
-            similarity = F.cosine_similarity(
+            similarity = 4 * F.cosine_similarity(
                 drug_projection, target_projection
             )
         else:
@@ -475,10 +525,27 @@ class DrugTargetCoembeddingLightning(pl.LightningModule):
         self.test_step_targets.clear()
 
     def embed(self, x, sample_type="drug"):
+        model_size = self.args.model_size
         if sample_type == "drug":
-            return self.drug_projector(x)
+            if model_size == 'huge' or model_size == 'mega':
+                y = self.drug_projector['proj'](x)
+                for layer in self.drug_projector['res']:
+                    y = y + layer(y)
+                drug_projection = self.drug_projector['out'](y)
+            else:
+                drug_projection = self.drug_projector(x)
+            return drug_projection
+
         elif sample_type == "target":
-            return self.target_projector(x)
+            if model_size == 'huge' or model_size == 'mega':
+                z = self.target_projector['attn'](x)
+                z = self.target_projector['proj'](z)
+                for layer in self.target_projector['res']:
+                    z = z + layer(z)
+                target_projection = self.target_projector['out'](z)
+            else:
+                target_projection = self.target_projector(x)
+            return target_projection
 
 
 def main():

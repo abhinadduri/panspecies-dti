@@ -59,14 +59,14 @@ def train_cli():
     parser.add_argument('--out-type', choices=['cls','mean'], help="use cls token or mean of everything else")
 
     parser.add_argument("--num-layers-target", type=int, help="Number of layers in target transformer", dest="num_layers_target")
-    parser.add_argument("--drug-layers", type=int, default=1, choices=[1, 2], help="Number of layers in drug transformer", dest="drug_layers")
+    parser.add_argument("--drug-layers", type=int, choices=[1, 2], help="Number of layers in drug transformer", dest="drug_layers")
     parser.add_argument("--num-heads-agg", type=int, default=4, help="Number of attention heads for learned aggregation", dest="num_heads_agg")
     parser.add_argument("--dropout", type=float, help="Dropout rate for transformer", dest="dropout")
     parser.add_argument("--batch-size", type=int, default=32, help="batch size for training/val/test")
     parser.add_argument("--num-workers", type=int, default=0, help="number of workers for intial data processing and dataloading during training")
     parser.add_argument("--no-wandb", action="store_true", help="Do not use wandb")
-    parser.add_argument("--model-size", default="small", choices=["small", "large"], help="Choose the size of the model")
-    parser.add_argument("--ship-model", action="store_true", help="Train a final to ship model on all data, only works on merged task.")
+    parser.add_argument("--model-size", default="small", choices=["small", "large", "huge", "mega"], help="Choose the size of the model")
+    parser.add_argument("--ship-model", help="Train a final to ship model, while excluding the uniprot id's specified by this argument.", dest="ship_model")
 
     args = parser.parse_args()
     train(**vars(args))
@@ -99,7 +99,7 @@ def train(
     no_wandb: bool,
     num_heads_agg: int,
     model_size: str,
-    ship_model: bool,
+    ship_model: str,
 ):
     args = argparse.Namespace(
         experiment_id=experiment_id,
@@ -285,7 +285,7 @@ def train(
         # Train on all data
         trainer.fit(model, datamodule=datamodule)
         # Save the final model
-        trainer.save_checkpoint(f"{save_dir}/esm2_ship_model.ckpt")
+        trainer.save_checkpoint(f"{save_dir}/ship_model.ckpt")
     else:
         # Regular training with validation
         trainer.fit(model, datamodule=datamodule)

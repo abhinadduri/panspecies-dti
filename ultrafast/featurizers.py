@@ -292,7 +292,7 @@ class Featurizer:
                         if seq_h5 in h5fi:
                             feats = torch.from_numpy(h5fi[seq_h5][:])
                         else:
-                            feats = self.transform(seq)
+                            feats = self.transform([seq])
 
 
                         self._features[seq] = feats
@@ -303,7 +303,7 @@ class Featurizer:
             for seq in tqdm(seq_list, disable=not verbose, desc=self.name):
                 if "seq_func" in kwargs:
                     seq = kwargs["seq_func"](seq)
-                feats = self.transform(seq)
+                feats = self.transform([seq])
 
 
                 self._features[seq] = feats

@@ -6,7 +6,7 @@ target_featurizer: ProtBertFeaturizer
 model_architecture: SimpleCoembeddingNoSigmoid
 latent_dimension: 1024
 latent_distance: "Cosine"
-loss_type: "focal"
+loss_type: "CE"
 num_layers_target: 2
 dropout: 0
 
@@ -35,4 +35,4 @@ wandb_proj: ConPlexTrain
 wandb_save: True
 log_file: ./logs/scratch_testing.log
 model_save_dir: ./best_models
-
+model_size: large
