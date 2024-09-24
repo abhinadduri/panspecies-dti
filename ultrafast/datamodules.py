@@ -1,18 +1,21 @@
-import pandas as pd
-
 import torch
-from torch.utils.data import Dataset, DataLoader
-from torch.nn.utils.rnn import pad_sequence
+import os
+
+import numpy as np
+import pandas as pd
 import pytorch_lightning as pl
+import pyxis as px
+import typing as T
+
 
 from numpy.random import choice
+from pathlib import Path
 from sklearn.model_selection import KFold, train_test_split
 from tdc.benchmark_group import dti_dg_group
+from torch.utils.data import Dataset, DataLoader
+from torch.nn.utils.rnn import pad_sequence
+from typing import Optional
 from ultrafast.featurizers import Featurizer
-
-from pathlib import Path
-import typing as T
-import os
 
 def get_task_dir(task_name: str):
     """
@@ -39,6 +42,7 @@ def get_task_dir(task_name: str):
         "kinase": "./data/EnzPred/davis_filtered",
         "phosphatase": "./data/EnzPred/phosphatase_chiral_binary",
         "leash": "./data/leash/",
+        "merged": "./data/MERGED/huge_data",
     }
 
     return Path(task_paths[task_name.lower()]).resolve()
@@ -1007,3 +1011,234 @@ class LeashDataModule(pl.LightningDataModule):
                 self.drug_featurizer,
                 self.target_featurizer,
             )
+
+class MergedDataset(Dataset):
+    def __init__(self, split, drug_db, target_db, id_to_smiles, id_to_target, tdim=1280, exclusion_file=None, neg_sample_ratio=1):
+        """
+        Constructor for the merged dataset, pooling DTI data from PubChem, BindingDB, and ChEMBL.
+
+        `split`: one of 'train', 'test', or 'val'
+        `drug_db`: a reference to the LMDB database of ligands that supports this dataset.
+        `target_db`: a reference to the LMDB database of targets that supports this dataset.
+        """
+        self.split = split
+        self.neg_sample_ratio = neg_sample_ratio
+
+        # Ligand ID to smiles mapping
+        self.id_to_smiles = id_to_smiles
+        # Target ID to smiles mapping
+        self.id_to_target = id_to_target
+
+        # Load the sequence model's embedding dimension
+        self.tdim = tdim
+
+        id_list = []
+        for k in list(self.id_to_target.keys()):
+            if any(char.isdigit() for char in self.id_to_target[k]):
+                continue
+            id_list.append(k)
+
+        self.id_to_target = {k: self.id_to_target[k] for k in id_list}
+        self.id_list = id_list
+
+        # connect the db id to the lmdb index
+        self.id_to_drug_lmdb = {db_id: lmdb_id for lmdb_id, db_id in enumerate(self.id_to_smiles.keys())}
+        self.id_to_prot_lmdb = {db_id: lmdb_id for lmdb_id, db_id in enumerate(id_list)}
+
+        # Exclude some ID's for homology based analysis
+        self.exclusion = set()
+        if exclusion_file is not None:
+            for line in open(exclusion_file.strip()):
+                self.exclusion.add(line.strip())
+
+        # Load positive and negative interactions
+        if split == 'all':
+            print('Training on all of train / val / test data to ship model.')
+            # Combine all data for final model
+            pos_data_train = pd.read_csv('data/MERGED/huge_data/merged_pos_uniq_train_rand.tsv', sep='\t')
+            pos_data_val = pd.read_csv('data/MERGED/huge_data/merged_pos_uniq_val_rand.tsv', sep='\t')
+            pos_data_test = pd.read_csv('data/MERGED/huge_data/merged_pos_uniq_test_rand.tsv', sep='\t')
+            self.pos_data = pd.concat([pos_data_train, pos_data_val, pos_data_test])
+
+            neg_data_train = pd.read_csv('data/MERGED/huge_data/merged_neg_uniq_train_rand.tsv', sep='\t')
+            neg_data_val = pd.read_csv('data/MERGED/huge_data/merged_neg_uniq_val_rand.tsv', sep='\t')
+            neg_data_test = pd.read_csv('data/MERGED/huge_data/merged_neg_uniq_test_rand.tsv', sep='\t')
+            self.neg_data = pd.concat([neg_data_train, neg_data_val, neg_data_test])
+        else:
+            self.pos_data = pd.read_csv(f'data/MERGED/huge_data/merged_pos_uniq_{split}_rand.tsv', sep='\t')
+            self.neg_data = pd.read_csv(f'data/MERGED/huge_data/merged_neg_uniq_{split}_rand.tsv', sep='\t')
+        
+        # Receive drug and target db's from the datamodule. we assume that concurrent reads are ok
+        self.drug_db = drug_db
+        self.target_db = target_db
+
+        # Sample negative data for the epoch
+        self.update_epoch_data()
+
+    def update_epoch_data(self):
+        """
+        Samples a random number of negative data, equal to the amount of positive data we have.
+        These will be used for the current epoch.
+        """
+        neg_sample_size = min(len(self.pos_data) * self.neg_sample_ratio, len(self.neg_data))
+        self.epoch_neg_data = self.neg_data.sample(n=neg_sample_size, replace=False)
+
+    def __len__(self):
+        """
+        Returns the total amount of data that we make visible during this epoch.
+        This would be all the positive data, and some random subsample of the negative data.
+        Therefore this always totals to 2 * len(self.pos_data).
+        """
+        return len(self.pos_data) + len(self.epoch_neg_data)
+
+    def __getitem__(self, idx):
+        """
+        Get an item from this dataset by idx.
+        If the idx is less than the size of the positive data, we return the positive example. 
+        Otherwise return a negative example.
+        """
+        if idx < len(self.pos_data):
+            interaction = self.pos_data.iloc[idx]
+            label = 1.0
+        else:
+            interaction = self.epoch_neg_data.iloc[idx - len(self.pos_data)]
+            label = 0.0
+
+        drug_id, aa_id = interaction['ligand'], interaction['aa_seq']
+
+        # aa_id is the uniprot id, simply check and see if this is blacklisted under mmseq threshold.
+        drug_id = self.id_to_drug_lmdb[drug_id]
+        drug_features = self.drug_db[drug_id]['feats']
+
+        # if the uniprot id is to be excluded for homology analysis
+        if self.split == 'all' and aa_id in self.exclusion:
+            drug_features = np.zeros(drug_features.shape, dtype=np.float32)
+            # if this is not ProtBert...
+            target_features = np.zeros((1, self.tdim), dtype=np.float32)
+        else:
+            if aa_id not in self.id_to_prot_lmdb: # if the uniprot id is not in the map
+                target_features = np.zeros((1, self.tdim), dtype=np.float32)
+            else:
+                target_entry = self.target_db[self.id_to_prot_lmdb[aa_id]]
+
+                if aa_id in target_entry:
+                    target_features = target_entry[aa_id]
+                else:
+                    target_features = np.zeros((1, self.tdim), dtype=np.float32)
+
+        # Fetch the drug and target feature for this idx from LMDB
+        return (
+            torch.from_numpy(drug_features), # drug
+            torch.from_numpy(target_features), # target
+            torch.tensor(label, dtype=torch.float32) # label
+        )
+
+    def on_epoch_end(self):
+        self.update_epoch_data()
+
+class MergedDataModule(pl.LightningDataModule):
+    def __init__(
+        self,
+        data_dir: str,
+        drug_featurizer: Featurizer,
+        target_featurizer: Featurizer,
+        device: torch.device("cuda"),
+        batch_size: int = 32,
+        shuffle: bool = True,
+        num_workers: int = 17,
+        test_size: float = 0.1,
+        val_size: float = 0.1,
+        random_state: int = 42,
+        header=0,
+        index_col=0,
+        sep=",",
+        ship_model: str = None,
+    ):
+        super().__init__()
+        self._loader_kwargs = {
+            "batch_size": batch_size,
+            "shuffle": shuffle,
+            "num_workers": num_workers,
+            "collate_fn": drug_target_collate_fn,
+        }
+
+        self.drug_featurizer = drug_featurizer
+        self.target_featurizer = target_featurizer
+        self.ship_model = ship_model
+
+        # Load in the ID to SMILES and ID to target sequence files
+        self.id_to_smiles = np.load('data/MERGED/huge_data/id_to_smiles.npy', allow_pickle=True).item()
+        if self.target_featurizer.name == "SaProt":
+            self.id_to_target = np.load('data/MERGED/huge_data/id_to_saprot_sequence.npy', allow_pickle=True).item()
+        else:
+            self.id_to_target = np.load('data/MERGED/huge_data/id_to_sequence.npy', allow_pickle=True).item()
+
+        id_list = []
+        for k in list(self.id_to_target.keys()):
+            if any(char.isdigit() for char in self.id_to_target[k]):
+                continue
+            id_list.append(k)
+
+        self.id_to_target = {k: self.id_to_target[k] for k in id_list}
+        self.id_list = id_list
+
+        # connect the db id to the lmdb index
+        self.id_to_drug_lmdb = {db_id: lmdb_id for lmdb_id, db_id in enumerate(self.id_to_smiles.keys())}
+        self.id_to_prot_lmdb = {db_id: lmdb_id for lmdb_id, db_id in enumerate(id_list)}
+
+        self.test_size = test_size
+        self.val_size = val_size
+        self.random_state = random_state
+
+        # these get initialized in setup
+        self.drug_db = None
+        self.target_db = None
+
+    def setup(self, stage: Optional[str] = None):
+        # Process drug and target databases if not already processed
+        # this stores featurizations for the given ligand ids and target ids into LMDB files
+        smiles_lmdb = 'data/MERGED/huge_data/smiles.lmdb'
+        target_lmdb = f'data/MERGED/huge_data/{self.target_featurizer.name}_targets.lmdb'
+
+        self.drug_featurizer.process_merged_drugs(self.id_to_smiles)
+        self.target_featurizer.process_merged_targets(self.id_to_target)
+
+        self.drug_db = px.Reader(dirpath=smiles_lmdb, lock=False) # we only read
+        self.target_db = px.Reader(dirpath=target_lmdb, lock=False)
+
+        tdim = self.target_featurizer.shape
+
+        if self.ship_model: # Combine all data for final model, while excluding targets specified by `ship_model` 
+            self.data_all = MergedDataset('all', self.drug_db, self.target_db, self.id_to_smiles, self.id_to_target, tdim=tdim, exclusion_file=self.ship_model)
+            self.data_test = MergedDataset('test', self.drug_db, self.target_db, self.id_to_smiles, self.id_to_target, tdim=tdim, exclusion_file=self.ship_model)
+        else:
+            # Regular setup for train/val/test
+            if stage == "fit" or stage is None:
+                self.data_train = MergedDataset('train', self.drug_db, self.target_db, self.id_to_smiles, self.id_to_target, tdim=tdim)
+                self.data_val = MergedDataset('val', self.drug_db, self.target_db, self.id_to_smiles, self.id_to_target, tdim=tdim)
+            if stage == "test" or stage is None:
+                self.data_test = MergedDataset('test', self.drug_db, self.target_db, self.id_to_smiles, self.id_to_target, tdim=tdim)
+
+    def train_dataloader(self):
+        if self.ship_model:
+            return DataLoader(self.data_all, **self._loader_kwargs, pin_memory=True)
+        return DataLoader(self.data_train, **self._loader_kwargs, pin_memory=True)
+    
+    def val_dataloader(self):
+        if self.ship_model:
+            return DataLoader(self.data_test, **self._loader_kwargs, pin_memory=True)
+        return DataLoader(self.data_val, **self._loader_kwargs, pin_memory=True)
+
+    def test_dataloader(self):
+        if self.ship_model:
+            return []
+        return DataLoader(self.data_test, **self._loader_kwargs, pin_memory=True)
+
+    def predict_dataloader(self):
+        if self.ship_model:
+            return DataLoader(self.data_all, **self._loader_kwargs, pin_memory=True)
+        return None
+
+    def teardown(self, stage: str):
+        self.drug_db.close()
+        self.target_db.close()

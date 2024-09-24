@@ -14,14 +14,15 @@ from pathlib import Path
 import argparse
 
 from ultrafast.datamodules import (
-        get_task_dir,
-        DTIDataModule,
-        DTIStructDataModule,
-        TDCDataModule,
-        DUDEDataModule,
-        EnzPredDataModule,
-        CombinedDataModule,
-        )
+    get_task_dir,
+    DTIDataModule,
+    DTIStructDataModule,
+    TDCDataModule,
+    DUDEDataModule,
+    EnzPredDataModule,
+    CombinedDataModule,
+    MergedDataModule
+)
 from ultrafast.model import DrugTargetCoembeddingLightning
 from ultrafast.utils import get_featurizer, xavier_normal
 
@@ -38,6 +39,7 @@ def train_cli():
         "biosnap_prot",
         "biosnap_mol",
         "dti_dg",
+        "merged",
         ], type=str, help="Task name. Could be biosnap, bindingdb, davis, biosnap_prot, biosnap_mol, dti_dg.",
     )
     parser.add_argument("--drug-featurizer", help="Drug featurizer", dest="drug_featurizer")
@@ -47,8 +49,8 @@ def train_cli():
     parser.add_argument("--lr", "--learning-rate", type=float, help="initial learning rate", dest="lr",)
     parser.add_argument("--clr", type=float, help="contrastive initial learning rate", dest="clr")
     parser.add_argument("--CEWeight", "-C", default=1.0, type=float, help="Cross Entropy loss weight", dest="CEWeight")
-    parser.add_argument("--InfoNCEWeight","-I", type=float, help="InfoNCE loss weight", dest="InfoNCEWeight")
-    parser.add_argument("--InfoNCETemp", "-T", type=float, help="InfoNCE temperature", dest="InfoNCETemp")
+    parser.add_argument("--InfoNCEWeight","-I", default=0.0, type=float, help="InfoNCE loss weight", dest="InfoNCEWeight")
+    parser.add_argument("--InfoNCETemp", "-T", default=1.0, type=float, help="InfoNCE temperature", dest="InfoNCETemp")
     parser.add_argument("--r", "--replicate", type=int, help="Replicate", dest="replicate")
     parser.add_argument("--d", "--device", default=0, type=int, help="CUDA device", dest="device")
     parser.add_argument("--verbosity", type=int, help="Level at which to log", dest="verbosity")
@@ -61,8 +63,10 @@ def train_cli():
     parser.add_argument("--num-heads-agg", type=int, default=4, help="Number of attention heads for learned aggregation", dest="num_heads_agg")
     parser.add_argument("--dropout", type=float, help="Dropout rate for transformer", dest="dropout")
     parser.add_argument("--batch-size", type=int, default=32, help="batch size for training/val/test")
+    parser.add_argument("--num-workers", type=int, default=0, help="number of workers for intial data processing and dataloading during training")
     parser.add_argument("--no-wandb", action="store_true", help="Do not use wandb")
-
+    parser.add_argument("--model-size", default="small", choices=["small", "large", "huge", "mega"], help="Choose the size of the model")
+    parser.add_argument("--ship-model", help="Train a final to ship model, while excluding the uniprot id's specified by this argument.", dest="ship_model")
 
     args = parser.parse_args()
     train(**vars(args))
@@ -91,8 +95,11 @@ def train(
     drug_layers: int,
     dropout: float,
     batch_size: int,
+    num_workers: int,
     no_wandb: bool,
     num_heads_agg: int,
+    model_size: str,
+    ship_model: str,
 ):
     args = argparse.Namespace(
         experiment_id=experiment_id,
@@ -118,8 +125,11 @@ def train(
         drug_layers=drug_layers,
         dropout=dropout,
         batch_size=batch_size,
+        num_workers=num_workers,
         no_wandb=no_wandb,
         num_heads_agg=num_heads_agg,
+        model_size=model_size,
+        ship_model=ship_model,
     )
     config = OmegaConf.load(args.config)
     args_overrides = {k: v for k, v in vars(args).items() if v is not None}
@@ -143,7 +153,8 @@ def train(
     print("Preparing DataModule")
     task_dir = get_task_dir(config.task)
 
-    drug_featurizer = get_featurizer(config.drug_featurizer, save_dir=task_dir)
+    drug_featurizer = get_featurizer(config.drug_featurizer, save_dir=task_dir, n_jobs=config.num_workers)
+
     target_featurizer = get_featurizer(config.target_featurizer, save_dir=task_dir)
 
     # Set up task dm arguments
@@ -165,7 +176,7 @@ def train(
         RuntimeError("EnzPredDataModule not implemented yet")
     else:
         config.classify = True
-        config.watch_metric = "val/f1"
+        config.watch_metric = "val/aupr"
         task_dm_kwargs = {
                 "data_dir": task_dir,
                 "drug_featurizer": drug_featurizer,
@@ -207,7 +218,10 @@ def train(
         else:
             datamodule = DTIDataModule(**task_dm_kwargs)
 
-    datamodule.prepare_data()
+    if config.task != 'merged':
+        datamodule.prepare_data() # this task is already setup
+    else:
+        datamodule = MergedDataModule(**task_dm_kwargs, ship_model=ship_model)
     datamodule.setup()
 
     # Load model
@@ -246,24 +260,37 @@ def train(
         if hasattr(wandb_logger.experiment.config, 'update'):
             wandb_logger.experiment.config.update(OmegaConf.to_container(config, resolve=True, throw_on_missing=True))
 
-    checkpoint_callback = pl.callbacks.ModelCheckpoint(monitor=config.watch_metric, mode="max", filename=config.task,
-                                                       dirpath=save_dir, verbose=True)
+    checkpoint_callback = pl.callbacks.ModelCheckpoint(
+        monitor=config.watch_metric,
+        mode="max",
+        filename=config.task,
+        dirpath=save_dir,
+        verbose=True
+    )
+
     # Train model
     trainer = pl.Trainer(
-            accelerator="auto",
-            devices="auto",
-            logger=wandb_logger if not config.no_wandb else None,
-            max_epochs=config.epochs,
-            callbacks=[checkpoint_callback],
-            reload_dataloaders_every_n_epochs=1 if config.contrastive else 0,
-            )
-    trainer.fit(
-            model,
-            datamodule=datamodule,
-            )
+        accelerator="auto",
+        devices="auto",
+        strategy="auto",
+        logger=wandb_logger if not config.no_wandb else None,
+        max_epochs=config.epochs,
+        callbacks=[checkpoint_callback],
+        reload_dataloaders_every_n_epochs=1 if config.contrastive else 0,
+        # Disable testing for final model mode
+        limit_test_batches=0 if ship_model else 1.0,
+    )
 
-    # Test model using best weights
-    trainer.test(datamodule=datamodule, ckpt_path=checkpoint_callback.best_model_path)
+    if ship_model:
+        # Train on all data
+        trainer.fit(model, datamodule=datamodule)
+        # Save the final model
+        trainer.save_checkpoint(f"{save_dir}/ship_model.ckpt")
+    else:
+        # Regular training with validation
+        trainer.fit(model, datamodule=datamodule)
+        # Test model using best weights
+        trainer.test(datamodule=datamodule, ckpt_path=checkpoint_callback.best_model_path)
 
 
 if __name__ == '__main__':

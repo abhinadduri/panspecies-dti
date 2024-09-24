@@ -8,6 +8,9 @@ import typing as T
 import datamol as dm
 import esm
 import requests
+import os
+import pyxis as px
+import pandas as pd
 
 from functools import partial
 from molfeat.trans.pretrained.hf_transformers import PretrainedHFTransformer
@@ -48,7 +51,7 @@ class Featurizer:
         self._save_path = save_dir / Path(f"{self._name}_features.{ext}")
 
         self._preloaded = False
-        self._device = torch.device("cpu")
+        self._device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
         self._cuda_registry = {}
         self._on_cuda = False
         self._features = {}
@@ -179,6 +182,93 @@ class Featurizer:
 
             torch.save(features,out_path)
 
+        elif str(out_path).endswith('.lmdb'):
+            db = px.Writer(dirpath=str(out_path), map_size_limit=10000, ram_gb_limit=10)
+            with tqdm(total=total_seqs, desc=self.name) as pbar:
+                for batch in batched(seq_list, batch_size):
+                    batch_results = self.transform(batch)
+                    for seq, result in zip(batch, batch_results):
+                        db.put_samples(seq, result)
+                    pbar.update(batch_size)
+
+            db.close()
+
+    def _read_chunk(file_path, chunk):
+        result = {}
+        with h5py.File(file_path, "r") as h5fi:
+            for seq in chunk:
+                seq_h5 = sanitize_string(seq)
+                if seq_h5 in h5fi:
+                    feats = torch.from_numpy(h5fi[seq_h5][:])
+                    result[seq] = feats
+        return result
+
+    def process_merged_drugs(self, id_to_smiles):
+        """
+        This function is intended to featurize the huge database file, and should not be used for any other database.
+        Individual featurizers are able to process `batch_size` number of elements at once, so provide this size.
+        """
+
+        lmdb_path = 'data/MERGED/huge_data/smiles.lmdb'
+        if os.path.exists(lmdb_path):
+            print(f"File {lmdb_path} exists, skipping processing smiles.")
+            return
+
+        # Sort the IDs to ensure ascending order
+        sorted_ids = sorted(id_to_smiles.keys())
+
+        # Open LMDB environment, give it 5GB just in case.
+        db = px.Writer(dirpath=lmdb_path, map_size_limit=50000, ram_gb_limit=10)
+
+        # For each batch of 2048 id's, featurize them, e.g., call self.transform on a list of sequences
+        batch_size = 2048 * 8
+        for i in tqdm(range(0, len(sorted_ids), batch_size)):
+            batch_ids = np.array(sorted_ids[i:i+batch_size])
+            batch_smiles = [id_to_smiles[idx] for idx in batch_ids]
+
+            # Compute Morgan fingerprints for the batch
+            fingerprints = self.transform(batch_smiles)
+
+            # for idx, result in zip(batch_ids, fingerprints):
+            db.put_samples('ids', batch_ids, 'feats', fingerprints.numpy())
+
+        print(f"Processed and stored {len(sorted_ids)} drug fingerprints in LMDB.")
+
+        # Loading this data will require picking bin ids, then sampling from within those bin ids
+
+    def process_merged_targets(self, id_to_target):
+        """ 
+        This function is intended to featurize the huge database file, and should not be used for any other database.
+        """
+
+        lmdb_path = f'data/MERGED/huge_data/{self.name}_targets.lmdb'
+        if os.path.exists(lmdb_path):
+            print(f"File {lmdb_path} exists, skipping processing protein targets.")
+            return
+
+        # retain only the keys for valid proteins
+        id_list = []
+        for k in list(id_to_target.keys()):
+            if any(char.isdigit() for char in id_to_target[k]):
+                continue
+            id_list.append(k)
+
+        # Open the LMDB env, give it 5GB just in case.
+        db = px.Writer(dirpath=lmdb_path, map_size_limit=100000, ram_gb_limit=10)
+
+        # For each batch, featurize them, e.g., call self.transform on a list of sequence
+        batch_size = 16
+        for i in tqdm(range(0, len(id_list), batch_size)):
+            batch_ids = np.array(id_list[i:i+batch_size])
+            # id to target is uniprot to aaseq
+            batch_targets = [id_to_target[seq_id] for seq_id in batch_ids]
+
+            feats = self.transform(batch_targets)
+
+            for seq, results in zip(batch_ids, feats):
+                seq_data = results.numpy()[np.newaxis, ...]
+                db.put_samples(seq, seq_data)
+
     def preload(
         self,
         seq_list: T.List[str],
@@ -202,7 +292,7 @@ class Featurizer:
                         if seq_h5 in h5fi:
                             feats = torch.from_numpy(h5fi[seq_h5][:])
                         else:
-                            feats = self.transform(seq)
+                            feats = self.transform([seq])
 
 
                         self._features[seq] = feats
@@ -213,14 +303,16 @@ class Featurizer:
             for seq in tqdm(seq_list, disable=not verbose, desc=self.name):
                 if "seq_func" in kwargs:
                     seq = kwargs["seq_func"](seq)
-                feats = self.transform(seq)
+                feats = self.transform([seq])
 
 
                 self._features[seq] = feats
             self._preloaded = True
 
+        torch.cuda.empty_cache()
+
 class ChemGPTFeaturizer(Featurizer):
-    def __init__(self, shape: int = 768, save_dir: Path = Path().absolute(), ext: str = "h5", batch_size: int = 32):
+    def __init__(self, shape: int = 768, save_dir: Path = Path().absolute(), ext: str = "h5", batch_size: int = 32, n_jobs=-1):
         super().__init__("RoBertaZinc", shape, save_dir, ext, batch_size)
         self.transformer = PretrainedHFTransformer(kind='Roberta-Zinc480M-102M', notation='selfies', dtype=float, device=self._device)
 
@@ -324,6 +416,7 @@ class ProtBertFeaturizer(Featurizer):
         super().__init__("ProtBert", 1024, save_dir)
 
 
+        self._device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
         self._max_len = 1024
         self.per_tok = per_tok
 
@@ -340,6 +433,7 @@ class ProtBertFeaturizer(Featurizer):
             "feature-extraction",
             model=self._protbert_model,
             tokenizer=self._protbert_tokenizer,
+            device=self._device,
         )
 
         self._register_cuda("model", self._protbert_model)
@@ -348,6 +442,7 @@ class ProtBertFeaturizer(Featurizer):
         )
 
     def _feat_to_device(self, pipe, device):
+        self._device = device
 
         if device.type == "cpu":
             d = -1
@@ -401,6 +496,8 @@ class ESM2Featurizer(Featurizer):
         self.model, self.alphabet = esm.pretrained.esm2_t33_650M_UR50D()
         self.batch_converter = self.alphabet.get_batch_converter()
 
+        self._max_len = 1024
+
         # overload default of CPU
         self._device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
         
@@ -420,11 +517,15 @@ class ESM2Featurizer(Featurizer):
 
             return token_embeddings[0, 1:].squeeze(0)  # Return the full sequence embedding
         except Exception as e:
-            print(f"Error featurizing single sequence: {e}")
+            print(f"Error featurizing single sequence: {seq}")
             return torch.zeros((len(seq), self.shape)) # zero vector for each token
 
     def _transform(self, seqs: List[str]) -> List[torch.Tensor]:
         results = []
+        max_seq_len = self._max_len - 2
+        # Truncate sequences if necessary
+        seqs = [seq[:max_seq_len] for seq in seqs]
+
         try:
             data = [("protein", seq) for seq in seqs]
             _, _, batch_tokens = self.batch_converter(data)
@@ -472,14 +573,16 @@ class SaProtFeaturizer(Featurizer):
             
         self.model, self.alphabet = load_esm_saprot(model_path)
         self.batch_converter = self.alphabet.get_batch_converter()
+
+        self._device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
         
         # Move model to GPU if available
+        self.model = self.model.to(self._device)
         self.model.eval()  # Set the model to evaluation mode
-        self.model.cuda() if torch.cuda.is_available() else self.model.cpu()
 
     def _transform_single(self, seq: str) -> torch.Tensor:
-        seq = SaProtFeaturizer.prepare_string(seq)
         try:
+            seq = SaProtFeaturizer.prepare_string(seq)
             data = [("protein", seq)]
             _, _, batch_tokens = self.batch_converter(data)
             batch_tokens = batch_tokens.to(self._device)
@@ -490,12 +593,17 @@ class SaProtFeaturizer(Featurizer):
 
             return token_embeddings[0, 1:].squeeze(0)  # Return the full sequence embedding
         except Exception as e:
-            print(f"Error featurizing single sequence: {e}")
-            return torch.zeros((len(seq), self.shape)) # zero vector for each token
+            print(f"Error featurizing single sequence: {seq}")
+            if isinstance(seq, str):
+                return torch.zeros((len(seq), self.shape)) # zero vector for each token
+            else:
+                return torch.zeros((1, self.shape))
 
     def _transform(self, seqs: List[str]) -> List[torch.Tensor]:
         results = []
         try:
+            seqs = [SaProtFeaturizer.prepare_string(seq) for seq in seqs]
+
             data = [("protein", seq) for seq in seqs]
             _, _, batch_tokens = self.batch_converter(data)
             batch_tokens = batch_tokens.to(self._device)
