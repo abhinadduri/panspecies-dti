@@ -510,12 +510,13 @@ class ESM2Featurizer(Featurizer):
             data = [("protein", seq)]
             _, _, batch_tokens = self.batch_converter(data)
             batch_tokens = batch_tokens.to(self._device)
+            batch_lens = (batch_tokens != self.alphabet.padding_idx).sum(dim=1)
 
             with torch.no_grad():
                 results = self.model(batch_tokens, repr_layers=[33], return_contacts=False)
             token_embeddings = results["representations"][33].detach().cpu()
 
-            return token_embeddings[0, 1:].squeeze(0)  # Return the full sequence embedding
+            return token_embeddings[0, 1:batch_lens -1].squeeze(0)  # Return the full sequence embedding
         except Exception as e:
             print(f"Error featurizing single sequence: {seq}")
             return torch.zeros((len(seq), self.shape)) # zero vector for each token
@@ -530,12 +531,15 @@ class ESM2Featurizer(Featurizer):
             data = [("protein", seq) for seq in seqs]
             _, _, batch_tokens = self.batch_converter(data)
             batch_tokens = batch_tokens.to(self._device)
+            batch_lens = (batch_tokens != self.alphabet.padding_idx).sum(dim=1)
 
             with torch.no_grad():
                 results = self.model(batch_tokens, repr_layers=[33], return_contacts=False)
             token_embeddings = results["representations"][33].detach().cpu()
 
-            results = [token_embeddings[j, 1:].squeeze(0) for j in range(len(seqs))]
+            results = []
+            for i, token_lens in enumerate(batch_lens):
+                results.append(token_embeddings[i, 1:token_lens -1].squeeze(0))
         except RuntimeError as e:
             if "CUDA out of memory" in str(e):
                 torch.cuda.empty_cache()
@@ -586,12 +590,13 @@ class SaProtFeaturizer(Featurizer):
             data = [("protein", seq)]
             _, _, batch_tokens = self.batch_converter(data)
             batch_tokens = batch_tokens.to(self._device)
+            batch_lens = (batch_tokens != self.alphabet.padding_idx).sum(dim=1)
 
             with torch.no_grad():
                 results = self.model(batch_tokens, repr_layers=[33], return_contacts=False)
             token_embeddings = results["representations"][33].detach().cpu()
 
-            return token_embeddings[0, 1:].squeeze(0)  # Return the full sequence embedding
+            return token_embeddings[0, 1:batch_lens -1].squeeze(0)  # Return the full sequence embedding
         except Exception as e:
             print(f"Error featurizing single sequence: {seq}")
             if isinstance(seq, str):
@@ -607,12 +612,15 @@ class SaProtFeaturizer(Featurizer):
             data = [("protein", seq) for seq in seqs]
             _, _, batch_tokens = self.batch_converter(data)
             batch_tokens = batch_tokens.to(self._device)
+            batch_lens = (batch_tokens != self.alphabet.padding_idx).sum(dim=1)
 
             with torch.no_grad():
                 results = self.model(batch_tokens, repr_layers=[33], return_contacts=False)
             token_embeddings = results["representations"][33].detach().cpu()
 
-            results = [token_embeddings[j, 1:].squeeze(0) for j in range(len(seqs))]
+            results = []
+            for i, token_lens in enumerate(batch_lens):
+                results.append(token_embeddings[i, 1:token_lens -1].squeeze(0))
         except RuntimeError as e:
             if "CUDA out of memory" in str(e):
                 print("CUDA out of memory during batch processing. Falling back to sequential processing.")
