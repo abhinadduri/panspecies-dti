@@ -458,14 +458,14 @@ class TDCDataModule(pl.LightningDataModule):
         self.drug_featurizer = drug_featurizer
         self.target_featurizer = target_featurizer
 
+        self.dg_group = dti_dg_group(path=self._data_dir)
+        self.dg_benchmark = self.dg_group.get("bindingdb_patent")
+
     def prepare_data(self):
 
-        dg_group = dti_dg_group(path=self._data_dir)
-        dg_benchmark = dg_group.get("bindingdb_patent")
-
         train_val, test = (
-                dg_benchmark["train_val"],
-                dg_benchmark["test"],
+                self.dg_benchmark["train_val"],
+                self.dg_benchmark["test"],
                 )
 
         all_drugs = pd.concat([train_val, test])[self._drug_column].unique()
@@ -490,18 +490,16 @@ class TDCDataModule(pl.LightningDataModule):
 
     def setup(self, stage: T.Optional[str] = None):
 
-        dg_group = dti_dg_group(path=self._data_dir)
-        dg_benchmark = dg_group.get("bindingdb_patent")
-        dg_name = dg_benchmark["name"]
+        dg_name = self.dg_benchmark["name"]
 
-        self.df_train, self.df_val = dg_group.get_train_valid_split(
+        self.df_train, self.df_val = self.dg_group.get_train_valid_split(
                 benchmark=dg_name, 
                 split_type="default", 
                 seed=self._seed
                 )
-        self.df_test = dg_benchmark["test"]
+        self.df_test = self.dg_benchmark["test"]
 
-        self._dataframes = [self.df_train, self.df_val]
+        self._dataframes = [self.df_train, self.df_val, self.df_test]
 
         all_drugs = pd.concat([i[self._drug_column] for i in self._dataframes]).unique()
         all_targets = pd.concat([i[self._target_column] for i in self._dataframes]).unique()
