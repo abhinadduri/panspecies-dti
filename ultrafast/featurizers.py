@@ -184,14 +184,13 @@ class Featurizer:
 
         elif str(out_path).endswith('.lmdb'):
             db = px.Writer(dirpath=str(out_path), map_size_limit=10000, ram_gb_limit=10)
-            with tqdm(total=total_seqs, desc=self.name) as pbar:
-                for batch in batched(seq_list, batch_size):
-                    batch_results = self.transform(batch)
-                    for seq, result in zip(batch, batch_results):
-                        db.put_samples(seq, result)
-                    pbar.update(batch_size)
+            for i in tqdm(range(0, len(seq_list), batch_size)):
+                batch_smiles = np.array(seq_list[i:i+batch_size])
+                fingerprints = self.transform(batch_smiles)
+                db.put_samples('feats', fingerprints.numpy())
 
             db.close()
+            print(f"Processed and stored {len(seq_list)} drug fingerprints in LMDB.")
 
     def _read_chunk(file_path, chunk):
         result = {}
@@ -298,6 +297,36 @@ class Featurizer:
                         self._features[seq] = feats
             elif str(self._save_path).endswith('.pt'):
                 self._features.update(torch.load(self._save_path))
+            elif str(self._save_path).endswith('.lmdb'):
+                # Load from the LMDB database we created into self._features
+                db = px.Reader(dirpath=str(self._save_path))
+                total_samples = db.nb_samples
+                
+                with tqdm(total=total_samples, disable=not verbose, desc=self.name) as pbar:
+                    for i in range(0, total_samples, self._batch_size):
+                        batch_size = min(self._batch_size, total_samples - i)
+                        samples = db.get_samples(i, batch_size)
+                        
+                        # Assuming 'feats' is the key for the features
+                        if 'feats' in samples:
+                            batch_feats = samples['feats']
+                        else:
+                            # If 'feats' is not a key, assume the entire sample is the feature
+                            batch_feats = next(iter(samples.values()))
+                        
+                        batch_feats = torch.from_numpy(batch_feats)
+                        
+                        # Assuming the sequences are stored in order
+                        batch_seqs = seq_list[i:i+batch_size]
+                        
+                        for seq, feat in zip(batch_seqs, batch_feats):
+                            if "seq_func" in kwargs:
+                                seq = kwargs["seq_func"](seq)
+                            self._features[seq] = feat
+                        
+                        pbar.update(batch_size)
+
+                db.close()
 
         else:
             for seq in tqdm(seq_list, disable=not verbose, desc=self.name):

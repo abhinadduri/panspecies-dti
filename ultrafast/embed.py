@@ -20,6 +20,7 @@ def embed_cli():
     parser.add_argument('--output_path', type=str, required=True, help='path to save embeddings. Currently only supports numpy format.')
     parser.add_argument('--batch_size', type=int, default=128, help='Batch size for inference')
     parser.add_argument('--device', type=str, default=0, help='CUDA device. If CUDA is not available, this will be ignored.')
+    parser.add_argument('--ext', type=str, default="h5", choices=['h5', 'lmdb', 'pt'], help='File format to store the drug and target features before co-embedding.')
     args = parser.parse_args()
     embed(**vars(args))
 
@@ -31,6 +32,7 @@ def embed(
     moltype: str,
     output_path: str,
     batch_size: int,
+    ext: str,
 ):
     args = argparse.Namespace(
         checkpoint=checkpoint,
@@ -38,7 +40,8 @@ def embed(
         data_file=data_file,
         moltype=moltype,
         output_path=output_path,
-        batch_size=batch_size
+        batch_size=batch_size,
+        ext=ext,
     )
 
     model = DrugTargetCoembeddingLightning.load_from_checkpoint(args.checkpoint)
@@ -51,9 +54,9 @@ def embed(
     if os.path.dirname(args.output_path) != '' and not os.path.exists(os.path.dirname(args.output_path)):
         os.makedirs(os.path.dirname(args.output_path))
     if args.moltype == "drug":
-        featurizer = get_featurizer(model.args.drug_featurizer, batch_size=args.batch_size, save_dir=os.path.dirname(args.output_path))
+        featurizer = get_featurizer(model.args.drug_featurizer, batch_size=args.batch_size, save_dir=os.path.dirname(args.output_path), ext=ext)
     elif args.moltype == "target":
-        featurizer = get_featurizer(model.args.target_featurizer, batch_size=args.batch_size, save_dir=os.path.dirname(args.output_path))
+        featurizer = get_featurizer(model.args.target_featurizer, batch_size=args.batch_size, save_dir=os.path.dirname(args.output_path), ext=ext)
     featurizer = featurizer.to(device)
 
     dataset = EmbedDataset(args.data_file, args.moltype, featurizer)
