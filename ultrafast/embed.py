@@ -67,7 +67,7 @@ def embed(
     dataset = EmbedDataset(args.data_file, args.moltype, featurizer)
 
     collate_fn = partial(embed_collate_fn, moltype=args.moltype)
-    dataloader = DataLoader(dataset, batch_size=args.batch_size, shuffle=False, collate_fn=collate_fn, num_workers=args.num_workers)
+    dataloader = DataLoader(dataset, batch_size=args.batch_size, shuffle=False, collate_fn=collate_fn, num_workers=args.num_workers if args.num_workers != -1 else 0)
 
     embeddings = []
     with torch.no_grad():
