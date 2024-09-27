@@ -45,7 +45,7 @@ def batched(iterable, batch_size, func=None):
         yield batch
 
 class Featurizer:
-    def __init__(self, name: str, shape: int, save_dir: Path=Path().absolute(), ext: str="h5", batch_size: int = 32):
+    def __init__(self, name: str, shape: int, save_dir: Path=Path().absolute(), ext: str="h5", batch_size: int = 32, **kwargs):
         self._name = name
         self._shape = shape
         self._save_path = save_dir / Path(f"{self._name}_features.{ext}")
@@ -58,6 +58,10 @@ class Featurizer:
         self._file_dir = None
 
         self._batch_size = batch_size
+
+        self._map_size = 10000
+        if ext == 'lmdb' and 'map_size' in kwargs and kwargs['map_size'] is not None:
+            self._map_size = kwargs['map_size']
 
     def __call__(self, seq: str) -> torch.Tensor:
         if seq not in self.features:
@@ -183,7 +187,7 @@ class Featurizer:
             torch.save(features,out_path)
 
         elif str(out_path).endswith('.lmdb'):
-            db = px.Writer(dirpath=str(out_path), map_size_limit=10000, ram_gb_limit=10)
+            db = px.Writer(dirpath=str(out_path), map_size_limit=self._map_size, ram_gb_limit=10)
             for i in tqdm(range(0, len(seq_list), batch_size)):
                 batch_smiles = np.array(seq_list[i:i+batch_size])
                 fingerprints = self.transform(batch_smiles)
@@ -393,8 +397,9 @@ class MorganFeaturizer(Featurizer):
         ext: str = "h5",
         batch_size: int = 2048,
         n_jobs: int = -1,
+        **kwargs
     ):
-        super().__init__("Morgan", shape, save_dir, ext, batch_size)
+        super().__init__("Morgan", shape, save_dir, ext, batch_size, **kwargs)
 
         self._radius = radius
         # number of CPU workers to convert molecules to morgan fingerprints
@@ -442,7 +447,7 @@ class MorganFeaturizer(Featurizer):
 
 class ProtBertFeaturizer(Featurizer):
     def __init__(self, save_dir: Path = Path().absolute(), per_tok=False, **kwargs):
-        super().__init__("ProtBert", 1024, save_dir)
+        super().__init__("ProtBert", 1024, save_dir, **kwargs)
 
 
         self._device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
@@ -516,8 +521,8 @@ class ProtBertFeaturizer(Featurizer):
         return results
 
 class ESM2Featurizer(Featurizer):
-    def __init__(self, shape: int = 1280, save_dir: Path = Path().absolute(), ext: str = "h5", batch_size: int = 16):
-        super().__init__("ESM2", shape, save_dir, ext, batch_size)
+    def __init__(self, shape: int = 1280, save_dir: Path = Path().absolute(), ext: str = "h5", batch_size: int = 16, **kwargs):
+        super().__init__("ESM2", shape, save_dir, ext, batch_size, **kwargs)
 
         print(f"Using ESM2 featurizer with {self._batch_size} batches")
         
@@ -589,8 +594,8 @@ class ESM2Featurizer(Featurizer):
        
 # SaProt Featurizer
 class SaProtFeaturizer(Featurizer):
-    def __init__(self, shape: int = 1280, save_dir: Path = Path().absolute(), ext: str = "h5", batch_size: int = 16):
-        super().__init__("SaProt", shape, save_dir, ext, batch_size)
+    def __init__(self, shape: int = 1280, save_dir: Path = Path().absolute(), ext: str = "h5", batch_size: int = 16, **kwargs):
+        super().__init__("SaProt", shape, save_dir, ext, batch_size, **kwargs)
         
         # Load SaProt model
         model_path = "SaProt_650M_AF2.pt"

@@ -16,8 +16,9 @@ def embed_cli():
     parser.add_argument('--data-file', type=str, required=True, help='Path to file containing molecules to embed, in tsv format. With header and columns: "SMILES" for drugs, "Target Sequence" for targets')
     parser.add_argument("--moltype", type=str, help="Molecule type", choices=["drug", "target"], default="target")
     parser.add_argument('--checkpoint', type=str, required=True, help='Path to model checkpoint')
-    parser.add_argument('--output_path', type=str, required=True, help='path to save embeddings. Currently only supports numpy format.')
-    parser.add_argument('--batch_size', type=int, default=128, help='Batch size for inference')
+    parser.add_argument('--output-path', type=str, required=True, help='path to save embeddings. Currently only supports numpy format.')
+    parser.add_argument('--batch-size', type=int, default=128, help='Batch size for inference')
+    parser.add_argument('--map-size', type=int, default=10000, help="Map size limit for the LMDB")
     parser.add_argument('--num-workers', type=int, default=-1, help='Number of processes for featurization and DataLoading')
     parser.add_argument('--device', type=str, default=0, help='CUDA device. If CUDA is not available, this will be ignored.')
     parser.add_argument('--ext', type=str, default="h5", choices=['h5', 'lmdb', 'pt'], help='File format to store the drug and target features before co-embedding.')
@@ -33,6 +34,7 @@ def embed(
     output_path: str,
     batch_size: int,
     ext: str,
+    map_size: int,
     num_workers: int,
 ):
     args = argparse.Namespace(
@@ -43,6 +45,7 @@ def embed(
         output_path=output_path,
         batch_size=batch_size,
         ext=ext,
+        map_size=map_size,
         num_workers=num_workers,
     )
 
@@ -56,7 +59,7 @@ def embed(
     if os.path.dirname(args.output_path) != '' and not os.path.exists(os.path.dirname(args.output_path)):
         os.makedirs(os.path.dirname(args.output_path))
     if args.moltype == "drug":
-        featurizer = get_featurizer(model.args.drug_featurizer, batch_size=args.batch_size, save_dir=os.path.dirname(args.output_path), ext=ext, n_jobs=args.num_workers)
+        featurizer = get_featurizer(model.args.drug_featurizer, batch_size=args.batch_size, save_dir=os.path.dirname(args.output_path), ext=ext, n_jobs=args.num_workers, map_size=map_size)
     elif args.moltype == "target":
         featurizer = get_featurizer(model.args.target_featurizer, batch_size=args.batch_size, save_dir=os.path.dirname(args.output_path), ext=ext)
     featurizer = featurizer.to(device)
@@ -73,10 +76,6 @@ def embed(
             emb = model.embed(mols, sample_type=args.moltype)
             embeddings.append(emb.cpu().numpy())
     embeddings = np.concatenate(embeddings, axis=0)
-
-    # if output_path contains directories that do not exist, create them
-    # if os.path.dirname(args.output_path) != '' and not os.path.exists(os.path.dirname(args.output_path)):
-    #     os.makedirs(os.path.dirname(args.output_path))
 
     np.save(args.output_path, embeddings)
 
