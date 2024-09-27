@@ -17,7 +17,7 @@ class TestDefaults(unittest.TestCase):
         cmd = 'ultrafast-train --config configs/unittest_config.yaml --exp-id unittest --epochs 1 --no-wandb'
         sys.argv = cmd.split()
         train_cli()
-        cmd = 'ultrafast-embed --data-file data/unittest_dummy_data/train.csv  --checkpoint best_models/unittest/unittest.ckpt --output_path results/embeddings.npy'
+        cmd = 'ultrafast-embed --data-file data/unittest_dummy_data/train.csv  --checkpoint best_models/unittest/unittest.ckpt --output-path results/embeddings.npy'
         sys.argv = cmd.split()
         embed_cli()
         assert os.path.exists('results/embeddings.npy')
@@ -26,7 +26,7 @@ class TestDefaults(unittest.TestCase):
         cmd = 'ultrafast-train --config configs/unittest_config.yaml --exp-id unittest --epochs 1 --no-wandb'
         sys.argv = cmd.split()
         train_cli()
-        cmd = 'ultrafast-embed --data-file data/unittest_dummy_data/train.csv  --checkpoint best_models/unittest/unittest.ckpt --output_path results/embeddings.npy'
+        cmd = 'ultrafast-embed --data-file data/unittest_dummy_data/train.csv  --checkpoint best_models/unittest/unittest.ckpt --output-path results/embeddings.npy'
         sys.argv = cmd.split()
         embed_cli()
         cmd = 'ultrafast-store --data-file data/unittest_dummy_data/train.csv --embeddings results/embeddings.npy --moltype drug --db_dir ./dbs --db_name unittest_test_drug_embeddings'
