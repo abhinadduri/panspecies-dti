@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import torch
 import os
 
@@ -208,6 +210,27 @@ class ContrastiveDataset(Dataset):
         negativeEmb = self.posneg_featurizer(self.negatives[i])
 
         return anchorEmb, positiveEmb, negativeEmb
+
+class EmbedInMemoryDataset(Dataset):
+    def __init__(
+        self,
+        data: List[str],
+        featurizer: Featurizer,
+    ):
+        self.data = data
+        self.featurizer = featurizer
+
+        print("Featurizing the data")
+        self.featurizer.preload(self.data, write_first=True, seq_func=featurizer.prepare_string)
+
+    def __len__(self):
+        return len(self.data)
+
+    def __getitem__(self, i):
+        s = self.featurizer.prepare_string(self.data[i])
+        item = self.featurizer.features[s]
+
+        return item
 
 class EmbedDataset(Dataset):
     def __init__(
