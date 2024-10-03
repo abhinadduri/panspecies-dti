@@ -8,7 +8,7 @@ from tqdm import tqdm
 
 from torch.nn import CosineSimilarity
 from torch.utils.data import DataLoader
-from ultrafast.datamodules import EmbeddedDataset, embedded_collate_fn
+from ultrafast.datamodules import EmbeddedDataset
 
 # create a class that keeps track of the topk cosine_similarities and their IDs
 class TopK:
@@ -25,7 +25,7 @@ class TopK:
     # write a method that pushes a list of similarities and IDs
     def push_list(self, similarities, ids):
         for similarity, id in zip(similarities, ids):
-            self.push(similarity, id)
+            self.push(similarity, id.item())
 
 def argparse_topk():
     parser = argparse.ArgumentParser(description='Topk similarity search')
@@ -53,7 +53,7 @@ def topk(args):
     # create a dataloader for the library embeddings
     # create a TopK object for each query
     topks = [TopK(args.topk) for _ in range(query_embeddings.shape[0])]
-    dataloader = DataLoader(library_embeddings, batch_size=args.batch_size, shuffle=False, collate_fn=embedded_collate_fn)
+    dataloader = DataLoader(library_embeddings, batch_size=args.batch_size, shuffle=False)
     with torch.no_grad():
         for emb_mols, idxs in tqdm(dataloader, desc="Similarity", total=len(dataloader)):
             emb_mols = emb_mols.to(device)
@@ -78,7 +78,7 @@ def topk(args):
     for i, topk in enumerate(topks):
         rec_id = query_ids[i]
         simi_and_idx = topk.get()
-        idx = [x[1] for x in simi_and_idx]
+        idx = [int(x[1]) for x in simi_and_idx]
         top_mols = lib_df[lib_df.index.isin(idx)]
         # sort the top_mols by the order of the idx
         top_mols = top_mols.reindex(idx)
