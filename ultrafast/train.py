@@ -5,6 +5,7 @@ import pandas as pd
 import torch
 from torch import nn
 import pytorch_lightning as pl
+from pytorch_lightning.callbacks import Callback
 from pytorch_lightning.loggers import WandbLogger
 
 import wandb
@@ -13,6 +14,7 @@ from pathlib import Path
 
 import argparse
 
+from ultrafast.callbacks import eval_pcba
 from ultrafast.datamodules import (
     get_task_dir,
     DTIDataModule,
@@ -26,6 +28,9 @@ from ultrafast.datamodules import (
 from ultrafast.model import DrugTargetCoembeddingLightning
 from ultrafast.utils import get_featurizer, xavier_normal
 
+class PCBAEvaluationCallback(Callback):
+    def on_validation_epoch_end(self, trainer, pl_module):
+        eval_pcba(trainer, pl_module)
 
 def train_cli():
     parser = argparse.ArgumentParser(description="PLM_DTI Training.")
@@ -67,6 +72,7 @@ def train_cli():
     parser.add_argument("--no-wandb", action="store_true", help="Do not use wandb")
     parser.add_argument("--model-size", default="small", choices=["small", "large", "huge", "mega"], help="Choose the size of the model")
     parser.add_argument("--ship-model", help="Train a final to ship model, while excluding the uniprot id's specified by this argument.", dest="ship_model")
+    parser.add_argument("--eval-pcba", action="store_true", help="Evaluate PCBA during validation")
 
     args = parser.parse_args()
     train(**vars(args))
@@ -100,6 +106,7 @@ def train(
     num_heads_agg: int,
     model_size: str,
     ship_model: str,
+    eval_pcba: bool,
 ):
     args = argparse.Namespace(
         experiment_id=experiment_id,
@@ -130,6 +137,7 @@ def train(
         num_heads_agg=num_heads_agg,
         model_size=model_size,
         ship_model=ship_model,
+        eval_pcba=eval_pcba,
     )
     config = OmegaConf.load(args.config)
     args_overrides = {k: v for k, v in vars(args).items() if v is not None}
@@ -268,6 +276,10 @@ def train(
         verbose=True
     )
 
+    callbacks = [checkpoint_callback]
+    if args.eval_pcba:
+        callbacks.append(PCBAEvaluationCallback())
+
     # Train model
     trainer = pl.Trainer(
         accelerator="auto",
@@ -275,7 +287,7 @@ def train(
         strategy="auto",
         logger=wandb_logger if not config.no_wandb else None,
         max_epochs=config.epochs,
-        callbacks=[checkpoint_callback],
+        callbacks=callbacks,
         reload_dataloaders_every_n_epochs=1 if config.contrastive else 0,
         # Disable testing for final model mode
         limit_test_batches=0 if ship_model else 1.0,
