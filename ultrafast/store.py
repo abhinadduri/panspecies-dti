@@ -8,6 +8,7 @@ from tqdm import tqdm
 def store_cli():
     parser = argparse.ArgumentParser()
     parser.add_argument('--data-file', type=str, required=True, help='Path to the data file')
+    parser.add_argument('--delimiter', type=str, default=',', help='delimiter for data file')
     parser.add_argument('--embeddings', type=str, required=True, help='Path to the embeddings file')
     parser.add_argument('--moltype', type=str, required=True, help='Type of molecule (target or drug)')
     parser.add_argument('--db_dir', type=str, default='./dbs', help='Path to save the database(s)')
@@ -16,9 +17,10 @@ def store_cli():
     store(**vars(args))
 
 
-def store(data_file, embeddings, moltype, db_dir, db_name):
+def store(data_file, embeddings, moltype, db_dir, db_name, delimiter=','):
     embeddings = np.load(embeddings, allow_pickle=True)
-    df = pd.read_csv(data_file)
+    df = pd.read_csv(data_file, sep=delimiter)
+
     if moltype == 'target':
         doc_col = 'Target Sequence'
     elif moltype == 'drug':
@@ -32,7 +34,7 @@ def store(data_file, embeddings, moltype, db_dir, db_name):
     client = chromadb.PersistentClient(path=db_dir)
     collection = client.get_or_create_collection(name=db_name, metadata={"hnsw:space": "cosine"})
     # Max upsert size tolerated by chromadb
-    batch_size = 41660
+    batch_size = client.get_max_batch_size()
     for i in tqdm(range(0, len(documents), batch_size)):
         collection.upsert(
             documents=documents[i:i+batch_size],
@@ -41,4 +43,4 @@ def store(data_file, embeddings, moltype, db_dir, db_name):
             embeddings=embeddings[i:i+batch_size],
         )
     print(f"Stored {len(documents)} documents in the {db_name} collection of in the {db_dir} database")
-    
+

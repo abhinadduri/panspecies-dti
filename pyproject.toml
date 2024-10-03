@@ -24,7 +24,6 @@ dependencies = [
     "molfeat==0.10.1",
     "transformers==4.43.4",
     "chromadb==0.5.5",
-    "pyxis==0.2.1",
     "gdown==5.2.0",
     "ml-pyxis @ git+https://github.com/vicolab/ml-pyxis.git@master",
 ]
