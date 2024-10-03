@@ -224,15 +224,26 @@ class EmbedDataset(Dataset):
         self._column = "SMILES" if self.moltype == "drug" else "Target Sequence"
         print("Featurizing the data")
         self.featurizer.preload(self.data[self._column].unique().tolist(), write_first=True, seq_func=featurizer.prepare_string)
+        self.db = None
+        if str(self.featurizer._save_path).endswith("lmdb"):
+            self.db = px.Reader(dirpath=str(self.featurizer._save_path), lock=False) # we only read
 
     def __len__(self):
         return len(self.data)
 
     def __getitem__(self, i):
-        seq = self.featurizer.prepare_string(self.data[self._column].iloc[i])
-        mol = self.featurizer.features[seq]
+        if self.db is None:
+            seq = self.featurizer.prepare_string(self.data[self._column].iloc[i])
+            mol = self.featurizer.features[seq]
+        else:
+            mol = torch.from_numpy(self.db[i]['feats'])
+
 
         return mol
+
+    def teardown(self):
+        if self.db is not None:
+            self.db.close()
 
 class DTIDataModule(pl.LightningDataModule):
     """ DataModule used for training on drug-target interaction data.
