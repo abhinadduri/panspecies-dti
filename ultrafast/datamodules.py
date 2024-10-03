@@ -114,6 +114,22 @@ def contrastive_collate_fn(args: T.Tuple[torch.Tensor, torch.Tensor, torch.Tenso
 
     return anchors, positives, negatives
 
+def embedded_collate_fn(args: T.Tuple[torch.Tensor, str]):
+    """
+    Collate function for PyTorch data loader -- turn a batch of molecules into a batch of tensors
+
+    :param args: Batch of molecules
+    :type args: Iterable[Tuple[torch.Tensor, str]]
+    :return: Create a batch of examples
+    :rtype: torch.Tensor
+    """
+    m_emb = [a[0] for a in args]
+    ids = [a[1] for a in args]
+
+    mols = torch.stack(m_emb, 0)
+
+    return mols, ids
+
 def make_contrastive(
         df: pd.DataFrame,
         posneg_column: str,
@@ -231,6 +247,29 @@ class EmbedInMemoryDataset(Dataset):
         item = self.featurizer.features[s]
 
         return item
+
+class EmbeddedDataset(Dataset):
+    def __init__(self,
+                 emb_file: str,
+                 ):
+        self.db, self.data = None, None
+        if emb_file.endswith(".npy"):
+            self.data = np.load(emb_file, mmap_mode="r")
+        elif emb_file.endswith(".lmdb"):
+            self.db = px.Reader(dirpath=str(emb_file), lock=False) # we only read
+
+    def __len__(self):
+        return len(self.data) if self.data is not None else len(self.db)
+
+    def __getitem__(self, i):
+        if self.data is not None:
+            return torch.tensor(self.data[i]), i
+        else:
+            return torch.tensor(self.db[str(i)]['feats']), i
+
+    def teardown(self):
+        if self.db is not None:
+            self.db.close()
 
 class EmbedDataset(Dataset):
     def __init__(
