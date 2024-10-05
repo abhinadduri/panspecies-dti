@@ -132,26 +132,34 @@ class Learned_Aggregation_Layer(nn.Module):
         qk_scale: float = None,
         attn_drop: float = 0.0,
         proj_drop: float = 0.0,
+        inner_dim: int = None,
     ):
         super().__init__()
+
+        if inner_dim is None:
+            self.inner_dim = dim
+        else:
+            self.inner_dim = inner_dim
+
         self.num_heads = num_heads
-        head_dim: int = dim // num_heads
+        head_dim: int = self.inner_dim // num_heads
         # NOTE scale factor was wrong in my original version, can set manually to be compat with prev weights
         self.scale = qk_scale if qk_scale is not None else head_dim**-0.5
 
         self.cls_token = nn.Parameter(torch.randn(1, 1, dim))
-        self.q = nn.Linear(dim, dim, bias=qkv_bias)
-        self.k = nn.Linear(dim, dim, bias=qkv_bias)
-        self.v = nn.Linear(dim, dim, bias=qkv_bias)
+        self.q = nn.Linear(dim, self.inner_dim, bias=qkv_bias)
+        self.k = nn.Linear(dim, self.inner_dim, bias=qkv_bias)
+        self.v = nn.Linear(dim, self.inner_dim, bias=qkv_bias)
         self.id = nn.Identity()
         self.attn_drop = nn.Dropout(attn_drop)
-        self.proj = nn.Linear(dim, dim)
+        self.proj = nn.Linear(self.inner_dim, dim)
         self.proj_drop = nn.Dropout(proj_drop)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         if x.dim() == 2:
             x = x.unsqueeze(0)
         B, N, C = x.shape
+        C = self.inner_dim
         cls_tokens = self.cls_token.repeat(B, 1, 1)
         q = self.q(cls_tokens).reshape(B, 1, self.num_heads, C // self.num_heads).permute(0, 2, 1, 3)
         k = self.k(x).reshape(B, N, self.num_heads, C // self.num_heads).permute(0, 2, 1, 3)
@@ -215,10 +223,16 @@ class DrugTargetCoembeddingLightning(pl.LightningModule):
         self.args = args
 
         if args.drug_layers == 1:
+            # self.drug_projector = nn.Sequential(
+            #     nn.Linear(self.drug_dim, self.latent_dim), self.activation()
+            # )
+            # nn.init.xavier_normal_(self.drug_projector[0].weight)
             self.drug_projector = nn.Sequential(
-                nn.Linear(self.drug_dim, self.latent_dim), self.activation()
+                Learned_Aggregation_Layer(self.drug_dim, num_heads=self.args.num_heads_agg, attn_drop=dropout, proj_drop=dropout, inner_dim=512),
+                nn.Linear(self.drug_dim, self.latent_dim),
+                self.activation()
             )
-            nn.init.xavier_normal_(self.drug_projector[0].weight)
+            nn.init.xavier_normal_(self.drug_projector[1].weight)
         elif args.drug_layers == 2:
             self.drug_projector = nn.Sequential(
                 nn.Linear(self.drug_dim, 1260), self.activation(),
@@ -236,6 +250,7 @@ class DrugTargetCoembeddingLightning(pl.LightningModule):
 
         if 'model_size' in args and args.model_size == "large":  # override the above settings and use a large model for drug and target
             self.drug_projector = nn.Sequential(
+                Learned_Aggregation_Layer(self.drug_dim, num_heads=self.args.num_heads_agg, attn_drop=dropout, proj_drop=dropout, inner_dim=512),
                 nn.Linear(self.drug_dim, 1260),
                 self.activation(),
                 nn.Dropout(dropout),

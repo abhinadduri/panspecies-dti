@@ -16,6 +16,7 @@ from functools import partial
 from molfeat.trans.pretrained.hf_transformers import PretrainedHFTransformer
 from pathlib import Path
 from tqdm import tqdm
+from torch.nn.utils.rnn import pad_sequence
 from transformers import AutoTokenizer, AutoModel, pipeline
 from rdkit import Chem
 from rdkit.Chem import AllChem
@@ -24,6 +25,7 @@ from rdkit.Chem.rdmolops import RDKFingerprint
 from rdkit.Chem import rdFingerprintGenerator
 from ultrafast.utils import canonicalize
 from ultrafast.saprot_utils import load_esm_saprot
+from unimol_tools import UniMolRepr
 
 def sanitize_string(s):
     if isinstance(s, str):
@@ -224,7 +226,8 @@ class Featurizer:
         db = px.Writer(dirpath=lmdb_path, map_size_limit=50000, ram_gb_limit=10)
 
         # For each batch of 2048 id's, featurize them, e.g., call self.transform on a list of sequences
-        batch_size = 2048 * 8
+        # batch_size = 2048 * 8
+        batch_size = 128
         for i in tqdm(range(0, len(sorted_ids), batch_size)):
             batch_ids = np.array(sorted_ids[i:i+batch_size])
             batch_smiles = [id_to_smiles[idx] for idx in batch_ids]
@@ -651,3 +654,98 @@ class SaProtFeaturizer(Featurizer):
     @staticmethod
     def sanitize_string(s):
         return ''.join(c if c.isalnum() else '_' for c in s)
+
+# class UniMolFeaturizer(Featurizer):
+#     def __init__(
+#         self,
+#         shape: int = 512,
+#         save_dir: Path = Path().absolute(),
+#         ext: str = "h5",
+#         batch_size: int = 128,
+#         remove_hs: bool = False,
+#         n_jobs = -1,
+#     ):
+#         super().__init__("UniMol", shape, save_dir, ext, batch_size)
+        
+#         self.remove_hs = remove_hs
+#         self.unimol_repr = UniMolRepr(data_type='molecule', remove_hs=self.remove_hs)
+
+#     def _transform_single(self, smile: str) -> torch.Tensor:
+#         try:
+#             unimol_repr = self.unimol_repr.get_repr([smile], return_atomic_reprs=False)
+#             cls_repr = np.array(unimol_repr['cls_repr'])
+#             return torch.from_numpy(cls_repr).squeeze(0).float()
+#         except Exception as e:
+#             print(f"Error featurizing SMILES {smile}: {e}")
+#             return torch.zeros(self.shape)
+
+#     def _transform(self, batch_smiles: list[str]) -> torch.Tensor:
+#         try:
+#             unimol_repr = self.unimol_repr.get_repr(batch_smiles, return_atomic_reprs=False)
+#             cls_repr = np.array(unimol_repr['cls_repr'])
+#             return torch.from_numpy(cls_repr).float()
+#         except Exception as e:
+#             print(f"Error during batch featurization: {e}")
+#             return torch.stack([self._transform_single(smile) for smile in batch_smiles])
+
+class UniMolFeaturizer(Featurizer):
+    def __init__(
+        self,
+        shape: int = 512,
+        save_dir: Path = Path().absolute(),
+        ext: str = "h5",
+        batch_size: int = 128,
+        remove_hs: bool = False,
+        max_seq_len: int = 256,  # New parameter for maximum sequence length
+        n_jobs = -1,
+    ):
+        super().__init__("UniMol", shape, save_dir, ext, batch_size)
+        
+        self.remove_hs = remove_hs
+        self.unimol_repr = UniMolRepr(data_type='molecule', remove_hs=self.remove_hs)
+        self.max_seq_len = max_seq_len
+
+    def _transform_single(self, smile: str) -> torch.Tensor:
+        try:
+            unimol_repr = self.unimol_repr.get_repr([smile], return_atomic_reprs=True)
+            atom_reprs = np.array(unimol_repr['atomic_reprs']).squeeze(0)
+            
+            # Pad or truncate to max_seq_len
+            if atom_reprs.shape[0] < self.max_seq_len:
+                padding = np.zeros((self.max_seq_len - atom_reprs.shape[0], self.shape))
+                atom_reprs = np.vstack((atom_reprs, padding))
+            else:
+                atom_reprs = atom_reprs[:self.max_seq_len, :]
+            
+            return torch.from_numpy(atom_reprs).float()
+        except Exception as e:
+            print(f"Error featurizing SMILES {smile}: {e}")
+            return torch.zeros((self.max_seq_len, self.shape))
+
+    def _transform(self, batch_smiles: list[str]) -> list[torch.Tensor]:
+        try:
+            unimol_repr = self.unimol_repr.get_repr(batch_smiles, return_atomic_reprs=True)
+            atom_reprs = [torch.from_numpy(item).float() for item in unimol_repr['atomic_reprs']]
+            print('abhi', len(atom_reprs))
+
+            # Pad all sequences in the batch to max_seq_len
+            padded_reprs = []
+            for padded_repr in atom_reprs:
+                # if repr.shape[0] < self.max_seq_len:
+                #     padding = np.zeros((self.max_seq_len - repr.shape[0], self.shape))
+                #     padded_repr = np.vstack((repr, padding))
+                # else:
+                if padded_repr.shape[0] > self.max_seq_len:
+                    padded_repr = padded_repr[:self.max_seq_len, :]
+                padded_reprs.append(padded_repr)
+            
+            # return torch.from_numpy(np.array(padded_reprs)).float()
+            print('abhi', len(padded_reprs))
+            return padded_repr
+        except Exception as e:
+            print(f"Error during batch featurization: {e}")
+            return torch.stack([self._transform_single(smile) for smile in batch_smiles])
+
+    def to(self, device: torch.device):
+        # UniMolRepr doesn't have a to() method, so we just return self
+        return self
