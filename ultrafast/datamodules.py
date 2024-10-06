@@ -1114,12 +1114,13 @@ class MergedDataset(Dataset):
         """
         neg_sample_size = min(len(self.pos_data) * self.neg_sample_ratio, len(self.neg_data))
         self.epoch_neg_data = self.neg_data.sample(n=neg_sample_size, replace=False)
+        print(f'using {len(self.pos_data)} pos data and {len(self.epoch_neg_data)} neg data')
 
     def __len__(self):
         """
         Returns the total amount of data that we make visible during this epoch.
         This would be all the positive data, and some random subsample of the negative data.
-        Therefore this always totals to 2 * len(self.pos_data).
+        Therefore this always totals to (1 + self.neg_sample_ratio) * len(self.pos_data).
         """
         return len(self.pos_data) + len(self.epoch_neg_data)
 

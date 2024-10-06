@@ -223,16 +223,18 @@ class DrugTargetCoembeddingLightning(pl.LightningModule):
         self.args = args
 
         if args.drug_layers == 1:
-            # self.drug_projector = nn.Sequential(
-            #     nn.Linear(self.drug_dim, self.latent_dim), self.activation()
-            # )
-            # nn.init.xavier_normal_(self.drug_projector[0].weight)
             self.drug_projector = nn.Sequential(
-                Learned_Aggregation_Layer(self.drug_dim, num_heads=self.args.num_heads_agg, attn_drop=dropout, proj_drop=dropout, inner_dim=512),
                 nn.Linear(self.drug_dim, self.latent_dim),
                 self.activation()
             )
-            nn.init.xavier_normal_(self.drug_projector[1].weight)
+            nn.init.xavier_normal_(self.drug_projector[0].weight)
+
+            # self.drug_projector = nn.Sequential(
+            #     Learned_Aggregation_Layer(self.drug_dim, num_heads=self.args.num_heads_agg, attn_drop=dropout, proj_drop=dropout, inner_dim=512),
+            #     nn.Linear(self.drug_dim, self.latent_dim),
+            #     self.activation()
+            # )
+            # nn.init.xavier_normal_(self.drug_projector[1].weight)
         elif args.drug_layers == 2:
             self.drug_projector = nn.Sequential(
                 nn.Linear(self.drug_dim, 1260), self.activation(),
@@ -250,7 +252,7 @@ class DrugTargetCoembeddingLightning(pl.LightningModule):
 
         if 'model_size' in args and args.model_size == "large":  # override the above settings and use a large model for drug and target
             self.drug_projector = nn.Sequential(
-                Learned_Aggregation_Layer(self.drug_dim, num_heads=self.args.num_heads_agg, attn_drop=dropout, proj_drop=dropout, inner_dim=512),
+                # Learned_Aggregation_Layer(self.drug_dim, num_heads=self.args.num_heads_agg, attn_drop=dropout, proj_drop=dropout, inner_dim=512),
                 nn.Linear(self.drug_dim, 1260),
                 self.activation(),
                 nn.Dropout(dropout),
@@ -401,6 +403,7 @@ class DrugTargetCoembeddingLightning(pl.LightningModule):
             similarity = 4 * F.cosine_similarity(
                 drug_projection, target_projection
             )
+            # similarity = ((similarity / 4) + 1) / 2
         else:
             similarity = torch.bmm(
                 drug_projection.view(-1, 1, self.latent_dim),
@@ -445,6 +448,7 @@ class DrugTargetCoembeddingLightning(pl.LightningModule):
 
         if self.classify:
             similarity = torch.squeeze(self.sigmoid(similarity))
+            # similarity = torch.squeeze(similarity)
 
         loss = self.loss_fct(similarity, label) 
         infoloss = 0
