@@ -456,7 +456,7 @@ class DrugTargetCoembeddingLightning(pl.LightningModule):
         similarity, attn_head = self.forward(drug, protein)
 
         if self.classify:
-            similarity = torch.squeeze(self.sigmoid(similarity))
+            similarity = torch.squeeze(self.sigmoid(similarity * 5))
 
         loss = self.loss_fct(similarity, label) 
         infoloss = 0
@@ -464,7 +464,7 @@ class DrugTargetCoembeddingLightning(pl.LightningModule):
             infoloss = self.infoNCE_loss_fct(drug, protein, label)
 
         ag_loss = 0
-        if self.AG != 0:
+        if self.AG != 0 and self.args.task == 'binding_site':
             ag_loss = self.AG_loss(attn_head, binding_site)
 
         pdg_loss = 0

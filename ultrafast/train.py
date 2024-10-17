@@ -230,9 +230,9 @@ def train(
             datamodule = TDCDataModule(**task_dm_kwargs)
         elif config.task in EnzPredDataModule.dataset_list():
             RuntimeError("EnzPredDataModule not implemented yet")
-        elif config.target_featurizer == 'SaProtFeaturizer':
+        elif config.task != 'binding_site' and config.target_featurizer == 'SaProtFeaturizer':
             datamodule = DTIStructDataModule(**task_dm_kwargs)
-        elif config.task == 'bindingdb_bs':
+        elif config.task == 'binding_site':
             datamodule = BindSiteDataModule(**task_dm_kwargs)
         else:
             datamodule = DTIDataModule(**task_dm_kwargs)
