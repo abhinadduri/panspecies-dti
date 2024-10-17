@@ -45,8 +45,7 @@ def get_task_dir(task_name: str):
         "phosphatase": "./data/EnzPred/phosphatase_chiral_binary",
         "leash": "./data/leash/",
         "merged": "./data/MERGED/huge_data",
-        "binding_site": "./data/binding_site/",
-        "bindingdb_bs": "./data/BindingDB_BS",
+        "binding_site": "./data/PLINDER/",
     }
 
     return Path(task_paths[task_name.lower()]).resolve()
@@ -214,6 +213,7 @@ class BindingSiteDataset(Dataset):
         targets,
         labels,
         binding_sites,
+        residue_numbers,
         drug_featurizer: Featurizer,
         target_featurizer: Featurizer,
     ):
@@ -221,6 +221,7 @@ class BindingSiteDataset(Dataset):
         self.targets = targets
         self.labels = labels
         self.binding_sites = binding_sites
+        self.resnums = residue_numbers
 
         self.drug_featurizer = drug_featurizer
         self.target_featurizer = target_featurizer
@@ -232,11 +233,12 @@ class BindingSiteDataset(Dataset):
         drug = self.drug_featurizer(self.drugs.iloc[i])
         target = self.target_featurizer(self.targets.iloc[i])
         label = torch.tensor(self.labels.iloc[i], dtype=torch.float32)
-        # create a zero tensor with the same length as target
-        # then set the location of each binding site residue to 1, all others are 0
-        binding_site = torch.zeros(target.shape[0])
-        binding_site[self.binding_sites.iloc[i]] = 1
 
+        # create a torch.tensor from the resnums
+        # then create a mask from the binding sites
+        resnums = torch.tensor(self.resnums.iloc[i])
+        binding_site = torch.isin(resnums, torch.tensor(self.binding_sites.iloc[i]),assume_unique=True).float()
+        print(resnums.shape, target.shape)
         return drug, target, label, binding_site
 
 class ContrastiveDataset(Dataset):
@@ -533,25 +535,29 @@ class BindSiteDataModule(DTIDataModule):
             sep,
         )
         self._bindingsite_column = "Binding Idx"
+        self._resnum_column = "Resnums"
         self._data_dir = Path(data_dir)
-        self._train_path = Path("train.csv")
-        self._val_path = Path("val.csv")
-        self._test_path = Path("test.csv")
+        self._train_path = Path("train_foldseek.csv")
+        self._val_path = Path("val_foldseek.csv")
+        self._test_path = Path("test_foldseek.csv")
 
         self._loader_kwargs["collate_fn"] = drug_target_bs_collate_fn
 
-    def binding_str_to_list(self, binding_str):
+    def res_str_to_list(self, binding_str):
         if isinstance(binding_str, float): #if its a float, then its np.nan
             return []
         return list(map(int, binding_str.split(" ")))
 
     def setup(self, stage = None):
         self.df_train = pd.read_csv(self._data_dir / self._train_path, **self._csv_kwargs, dtype={self._target_column: str})
-        self.df_train[self._bindingsite_column] = self.df_train[self._bindingsite_column].apply(self.binding_str_to_list)
+        self.df_train[self._bindingsite_column] = self.df_train[self._bindingsite_column].apply(self.res_str_to_list)
+        self.df_train[self._resnum_column] = self.df_train[self._resnum_column].apply(self.res_str_to_list)
         self.df_val = pd.read_csv(self._data_dir / self._val_path, **self._csv_kwargs, dtype={self._target_column: str})
-        self.df_val[self._bindingsite_column] = self.df_val[self._bindingsite_column].apply(self.binding_str_to_list)
+        self.df_val[self._bindingsite_column] = self.df_val[self._bindingsite_column].apply(self.res_str_to_list)
+        self.df_val[self._resnum_column] = self.df_val[self._resnum_column].apply(self.res_str_to_list)
         self.df_test = pd.read_csv(self._data_dir / self._test_path, **self._csv_kwargs, dtype={self._target_column: str})
-        self.df_test[self._bindingsite_column] = self.df_test[self._bindingsite_column].apply(self.binding_str_to_list)
+        self.df_test[self._bindingsite_column] = self.df_test[self._bindingsite_column].apply(self.res_str_to_list)
+        self.df_test[self._resnum_column] = self.df_test[self._resnum_column].apply(self.res_str_to_list)
 
         self._dataframes = [self.df_train, self.df_val, self.df_test]
 
@@ -574,6 +580,7 @@ class BindSiteDataModule(DTIDataModule):
                 self.df_train[self._target_column],
                 self.df_train[self._label_column],
                 self.df_train[self._bindingsite_column],
+                self.df_train[self._resnum_column],
                 self.drug_featurizer,
                 self.target_featurizer,
             )
@@ -583,6 +590,7 @@ class BindSiteDataModule(DTIDataModule):
                 self.df_val[self._target_column],
                 self.df_val[self._label_column],
                 self.df_val[self._bindingsite_column],
+                self.df_val[self._resnum_column],
                 self.drug_featurizer,
                 self.target_featurizer,
             )
@@ -593,6 +601,7 @@ class BindSiteDataModule(DTIDataModule):
                 self.df_test[self._target_column],
                 self.df_test[self._label_column],
                 self.df_test[self._bindingsite_column],
+                self.df_test[self._resnum_column],
                 self.drug_featurizer,
                 self.target_featurizer,
             )
