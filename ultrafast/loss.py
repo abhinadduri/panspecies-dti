@@ -84,8 +84,11 @@ class MarginScheduledLossFunction:
         return self._loss_fn(anchor, positive, negative)
 
 class AttentionGuidanceLoss(torch.nn.Module):
-    def __init__(self):
+    def __init__(self, loss='mse_loss'):
         super(AttentionGuidanceLoss, self).__init__()
+
+        self.loss = F.mse_loss if loss == 'mse_loss' else F.l1_loss
+
 
     def forward(self, attention_head, binding_site):
         """
