@@ -114,22 +114,6 @@ def contrastive_collate_fn(args: T.Tuple[torch.Tensor, torch.Tensor, torch.Tenso
 
     return anchors, positives, negatives
 
-def embedded_collate_fn(args: T.Tuple[torch.Tensor, str]):
-    """
-    Collate function for PyTorch data loader -- turn a batch of molecules into a batch of tensors
-
-    :param args: Batch of molecules
-    :type args: Iterable[Tuple[torch.Tensor, str]]
-    :return: Create a batch of examples
-    :rtype: torch.Tensor
-    """
-    m_emb = [a[0] for a in args]
-    ids = [a[1] for a in args]
-
-    mols = torch.stack(m_emb, 0)
-
-    return mols, ids
-
 def make_contrastive(
         df: pd.DataFrame,
         posneg_column: str,
