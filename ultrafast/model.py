@@ -86,11 +86,7 @@ class DrugTargetCoembeddingLightning(pl.LightningModule):
         elif args.prot_proj == "transformer":
             protein_projector = TargetEmbedding( self.target_dim, self.latent_dim, num_layers_target, dropout=dropout, out_type=args.out_type)
         elif args.prot_proj == "agg":
-<<<<<<< HEAD
             self.target_projector = LearnedAgg_Projection(self.target_dim, self.latent_dim, self.activation, num_heads=args.num_heads_agg, attn_drop=dropout, proj_drop=dropout)
-=======
-            protein_projector = LearnedAgg_Projection(self.target_dim, self.latent_dim, self.activation, num_heads=args.num_heads_agg, attn_drop=dropout, proj_drop=dropout)
->>>>>>> 95cc3e1fbe8b3b6a8d4c83ed649f0fa52c843277
 
         if 'model_size' in args and args.model_size == "large":  # override the above settings and use a large model for drug and target
             self.drug_projector = nn.Sequential(
@@ -108,7 +104,6 @@ class DrugTargetCoembeddingLightning(pl.LightningModule):
                 nn.BatchNorm1d(self.latent_dim),
                 nn.Linear(self.latent_dim, self.latent_dim),
                 self.activation()
-<<<<<<< HEAD
             )
             nn.init.xavier_normal_(self.drug_projector[0].weight)
             nn.init.xavier_normal_(self.drug_projector[4].weight)
@@ -152,19 +147,6 @@ class DrugTargetCoembeddingLightning(pl.LightningModule):
                 'out': nn.Linear(2048, self.latent_dim),
             })
         
-=======
-        )
-
-
-        if args.prot_proj != "agg":
-            self.target_projector = nn.Sequential(
-                    protein_projector,
-                    self.activation()
-            )
-        else:
-            self.target_projector = protein_projector
-
->>>>>>> 95cc3e1fbe8b3b6a8d4c83ed649f0fa52c843277
         if 'prot_proj' not in args or args.prot_proj == "avg":
             nn.init.xavier_normal_(self.target_projector[0][1].weight)
 
@@ -400,7 +382,7 @@ class DrugTargetCoembeddingLightning(pl.LightningModule):
         self.val_step_targets.clear()
 
     def test_step(self, batch, batch_idx):
-        _, _, label = batch
+        label = batch[-1]
         _, _, similarity = self.non_contrastive_step(batch, train=False)
 
         self.test_step_outputs.extend(similarity)
