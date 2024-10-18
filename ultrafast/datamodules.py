@@ -113,7 +113,7 @@ def drug_target_bs_collate_fn(args: T.Tuple[torch.Tensor, torch.Tensor, torch.Te
     labels = torch.stack(labs, 0)
     binding_sites = pad_sequence(bs, batch_first=True)
 
-    return drugs, targets, labels, binding_sites
+    return drugs, targets, binding_sites, labels
 
 def contrastive_collate_fn(args: T.Tuple[torch.Tensor, torch.Tensor, torch.Tensor]):
     """
@@ -238,7 +238,9 @@ class BindingSiteDataset(Dataset):
         # then create a mask from the binding sites
         resnums = torch.tensor(self.resnums.iloc[i])
         binding_site = torch.isin(resnums, torch.tensor(self.binding_sites.iloc[i]),assume_unique=True).float()
-        print(resnums.shape, target.shape)
+        # if the length of the binding_site is not the same as target, then get the first len(target) elements
+        if len(binding_site) != target.shape[0]:
+            binding_site = binding_site[:target.shape[0]]
         return drug, target, label, binding_site
 
 class ContrastiveDataset(Dataset):

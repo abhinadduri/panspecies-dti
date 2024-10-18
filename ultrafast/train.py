@@ -23,7 +23,7 @@ from ultrafast.datamodules import (
         DUDEDataModule,
         EnzPredDataModule,
         CombinedDataModule,
-        MergedDataModule
+        MergedDataModule,
         BindSiteDataModule,
         )
 from ultrafast.model import DrugTargetCoembeddingLightning
