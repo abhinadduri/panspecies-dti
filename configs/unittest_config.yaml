@@ -6,7 +6,7 @@ target_featurizer: ProtBertFeaturizer
 model_architecture: SimpleCoembeddingNoSigmoid
 latent_dimension: 1024
 latent_distance: "Cosine"
-loss_type: "focal"
+loss_type: "CE"
 num_layers_target: 2
 dropout: 0
 
@@ -27,6 +27,8 @@ margin_max: 0.25
 margin_t0: 10
 InfoNCEWeight: 0.0
 drug_layers: 1
+AG: 0
+PDG: 0
 
 replicate: 0
 verbosity: 3

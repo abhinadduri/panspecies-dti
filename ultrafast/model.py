@@ -148,7 +148,7 @@ class DrugTargetCoembeddingLightning(pl.LightningModule):
             })
         
         if 'prot_proj' not in args or args.prot_proj == "avg":
-            nn.init.xavier_normal_(self.target_projector[0][1].weight)
+            nn.init.xavier_normal_(self.target_projector[1].weight)
 
         if self.classify:
             self.sigmoid = nn.Sigmoid()
