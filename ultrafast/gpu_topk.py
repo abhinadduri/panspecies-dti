@@ -37,6 +37,7 @@ def argparse_topk():
     parser.add_argument('--query_data', type=str, required=True, help='Path to the query data (csv)')
     parser.add_argument('--topk', type=int, default=100, help='Topk to consider for similarity')
     parser.add_argument('--batch_size', type=int, default=2048, help='Batch size for the dataloader')
+    parser.add_argument('--verbose','-v',action='store_true',help='Print similarities')
     return parser.parse_args()
 
 def topk(args):
@@ -79,20 +80,21 @@ def topk(args):
         rec_id = query_ids[i]
         simi_and_idx = topk.get()
         idx = [x[1] for x in simi_and_idx]
+        simi = [x[0] for x in simi_and_idx]
         top_mols = lib_df[lib_df.index.isin(idx)]
         # sort the top_mols by the order of the idx
         top_mols = top_mols.reindex(idx)
+        top_mols['CosineSimi'] = simi
         top_mols.to_csv(f"topk_mol_data_{rec_id}.csv", index=False)
         # use library_embeddings to get the embeddings of the topk molecules
         top_mol_emb = np.zeros((len(top_mols), emb_mols.shape[1]))
         for j, idx in enumerate(idx):
             top_mol_emb[j,:] = library_embeddings[idx][0].numpy()
         np.save(f"topk_mol_embeddings_{rec_id}.npy", top_mol_emb)
-        for similarity, idx in simi_and_idx:
-            print(f"Similarity: {similarity} ID: {lib_df.iloc[idx]['id']}")
-        # for similarity in topk.get():
-        #     print(f"Similarity: {similarity}")
-    # for rec_seq, hits in sorted(top_hits.items()):
+        if args.verbose:
+            print(f"{rec_id}:{i}")
+            for similarity, idx in simi_and_idx:
+                print(f"Similarity: {similarity} ID: {lib_df.iloc[idx]['id']}")
 
 
 if __name__ == '__main__':
