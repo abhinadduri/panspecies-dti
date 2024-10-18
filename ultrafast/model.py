@@ -217,6 +217,7 @@ class DrugTargetCoembeddingLightning(pl.LightningModule):
         if target.dim() == 2:
             target = target.unsqueeze(0)
 
+        attn_head = None
         if model_size == 'huge' or model_size == 'mega':
             z = self.target_projector['attn'](target)
             z = self.target_projector['proj'](z)
