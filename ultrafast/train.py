@@ -47,7 +47,6 @@ def train_cli():
         "dti_dg",
         "merged",
         "binding_site",
-        "bindingdb_bs",
         ], type=str, help="Task name. Could be biosnap, bindingdb, davis, biosnap_prot, biosnap_mol, dti_dg.",
     )
     parser.add_argument("--drug-featurizer", help="Drug featurizer", dest="drug_featurizer")

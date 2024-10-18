@@ -86,7 +86,11 @@ class DrugTargetCoembeddingLightning(pl.LightningModule):
         elif args.prot_proj == "transformer":
             protein_projector = TargetEmbedding( self.target_dim, self.latent_dim, num_layers_target, dropout=dropout, out_type=args.out_type)
         elif args.prot_proj == "agg":
+<<<<<<< HEAD
             self.target_projector = LearnedAgg_Projection(self.target_dim, self.latent_dim, self.activation, num_heads=args.num_heads_agg, attn_drop=dropout, proj_drop=dropout)
+=======
+            protein_projector = LearnedAgg_Projection(self.target_dim, self.latent_dim, self.activation, num_heads=args.num_heads_agg, attn_drop=dropout, proj_drop=dropout)
+>>>>>>> 95cc3e1fbe8b3b6a8d4c83ed649f0fa52c843277
 
         if 'model_size' in args and args.model_size == "large":  # override the above settings and use a large model for drug and target
             self.drug_projector = nn.Sequential(
@@ -104,6 +108,7 @@ class DrugTargetCoembeddingLightning(pl.LightningModule):
                 nn.BatchNorm1d(self.latent_dim),
                 nn.Linear(self.latent_dim, self.latent_dim),
                 self.activation()
+<<<<<<< HEAD
             )
             nn.init.xavier_normal_(self.drug_projector[0].weight)
             nn.init.xavier_normal_(self.drug_projector[4].weight)
@@ -147,6 +152,19 @@ class DrugTargetCoembeddingLightning(pl.LightningModule):
                 'out': nn.Linear(2048, self.latent_dim),
             })
         
+=======
+        )
+
+
+        if args.prot_proj != "agg":
+            self.target_projector = nn.Sequential(
+                    protein_projector,
+                    self.activation()
+            )
+        else:
+            self.target_projector = protein_projector
+
+>>>>>>> 95cc3e1fbe8b3b6a8d4c83ed649f0fa52c843277
         if 'prot_proj' not in args or args.prot_proj == "avg":
             nn.init.xavier_normal_(self.target_projector[0][1].weight)
 
@@ -278,7 +296,7 @@ class DrugTargetCoembeddingLightning(pl.LightningModule):
         similarity, attn_head = self.forward(drug, protein)
 
         if self.classify:
-            similarity = torch.squeeze(self.sigmoid(similarity))
+            similarity = torch.squeeze(self.sigmoid(similarity * 5))
 
         loss = self.loss_fct(similarity, label) 
         infoloss = 0
@@ -356,6 +374,14 @@ class DrugTargetCoembeddingLightning(pl.LightningModule):
 
         if self.PDG != 0:
             self.log("val/PDG_loss", oth_losses["PDG"])
+
+        if self.AG != 0 and self.args.task == 'bindingdb_bs':
+            attn_loss = self.AG_loss(attn_head, binding_site)
+            self.log("val/AG_loss", attn_loss)
+
+        if self.PDG != 0:
+            pdg_loss = self.PDG_loss(attn_head)
+            self.log("val/PDG_loss", pdg_loss)
 
         self.val_step_outputs.extend(similarity)
         self.val_step_targets.extend(label)
