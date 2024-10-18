@@ -6,6 +6,7 @@ target_featurizer: ProtBertFeaturizer
 model_architecture: SimpleCoembeddingNoSigmoid
 latent_dimension: 1024
 latent_distance: "Cosine"
+prot_proj: "avg"
 loss_type: "CE"
 num_layers_target: 2
 dropout: 0
