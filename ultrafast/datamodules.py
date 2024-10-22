@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import torch
 import os
+import hashlib
 
 import numpy as np
 import pandas as pd
@@ -216,6 +217,7 @@ class BindingSiteDataset(Dataset):
         residue_numbers,
         drug_featurizer: Featurizer,
         target_featurizer: Featurizer,
+        is_db=False,
     ):
         self.drugs = drugs
         self.targets = targets
@@ -230,8 +232,9 @@ class BindingSiteDataset(Dataset):
         return len(self.drugs)
 
     def __getitem__(self, i: int):
-        drug = self.drug_featurizer(self.drugs.iloc[i])
+        drug = self.drug_featurizer(self.drugs.iloc[i]) 
         target = self.target_featurizer(self.targets.iloc[i])
+        print(target)
         label = torch.tensor(self.labels.iloc[i], dtype=torch.float32)
 
         # create a torch.tensor from the resnums
@@ -239,7 +242,8 @@ class BindingSiteDataset(Dataset):
         resnums = torch.tensor(self.resnums.iloc[i])
         binding_site = torch.isin(resnums, torch.tensor(self.binding_sites.iloc[i]),assume_unique=True).float()
         # if the length of the binding_site is not the same as target, then get the first len(target) elements
-        if len(binding_site) != target.shape[0]:
+        # this should only happen if the target was trimmed during featurization
+        if len(binding_site) > target.shape[0]:
             binding_site = binding_site[:target.shape[0]]
         return drug, target, label, binding_site
 
@@ -378,6 +382,8 @@ class DTIDataModule(pl.LightningDataModule):
         self.drug_featurizer = drug_featurizer
         self.target_featurizer = target_featurizer
 
+        self.drug_db, self.target_db = None, None
+
     def prepare_data(self):
         """
         Featurize drugs and targets and save them to disk if they don't already exist
@@ -467,6 +473,12 @@ class DTIDataModule(pl.LightningDataModule):
     def test_dataloader(self):
         return DataLoader(self.data_test, **self._loader_kwargs)
 
+    def teardown(self):
+        if self.drug_db is not None:
+            self.drug_db.close()
+        if self.target_db is not None:
+            self.target_db.close()
+
 class DTIStructDataModule(DTIDataModule):
     """ DataModule used for training on drug-target interaction data.
     Uses the following data sets:
@@ -536,12 +548,19 @@ class BindSiteDataModule(DTIDataModule):
             index_col,
             sep,
         )
+        self.drug_featurizer.ext = ".lmdb"
+        self.target_featurizer.ext = ".lmdb"
+        self.drug_featurizer._save_path = Path(os.path.splitext(str(self.drug_featurizer.path))[0]+self.drug_featurizer.ext)
+        self.target_featurizer._save_path = Path(os.path.splitext(str(self.target_featurizer.path))[0]+self.target_featurizer.ext)
         self._bindingsite_column = "Binding Idx"
         self._resnum_column = "Resnums"
         self._data_dir = Path(data_dir)
-        self._train_path = Path("train_foldseek.csv")
-        self._val_path = Path("val_foldseek.csv")
-        self._test_path = Path("test_foldseek.csv")
+        addpath=""
+        if target_featurizer.name == "SaProt":
+            addpath= "_foldseek"
+        self._train_path = Path(f"train{addpath}.csv")
+        self._val_path = Path(f"val{addpath}.csv")
+        self._test_path = Path(f"test{addpath}.csv")
 
         self._loader_kwargs["collate_fn"] = drug_target_bs_collate_fn
 

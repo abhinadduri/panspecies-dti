@@ -3,6 +3,7 @@ from __future__ import annotations
 import h5py
 import torch
 import multiprocessing
+import hashlib
 import numpy as np
 import typing as T
 import datamol as dm
@@ -45,8 +46,9 @@ def batched(iterable, batch_size, func=None):
         yield batch
 
 class Featurizer:
-    def __init__(self, name: str, shape: int, save_dir: Path=Path().absolute(), ext: str="h5", batch_size: int = 32, **kwargs):
+    def __init__(self, name: str, shape: int, molecule_type: str, save_dir: Path=Path().absolute(), ext: str="h5", batch_size: int = 32, **kwargs):
         self._name = name
+        self._moltype = molecule_type
         self._shape = shape
         self._save_path = save_dir / Path(f"{self._name}_features.{ext}")
 
@@ -59,11 +61,21 @@ class Featurizer:
 
         self._batch_size = batch_size
 
+        self.id_to_idx = None
         self._map_size = 10000
         if ext == 'lmdb' and 'map_size' in kwargs and kwargs['map_size'] is not None:
             self._map_size = kwargs['map_size']
 
     def __call__(self, seq: str) -> torch.Tensor:
+        if self.ext == '.lmdb' and self.db is not None:
+            assert self.id_to_idx is not None, "LMDB database must be preloaded to use this function"
+            hashed_seq = hashlib.md5(seq.encode()).hexdigest()
+            item = self.db[self.id_to_idx[hashed_seq]]
+            if 'ids' in item:
+                return torch.from_numpy(item['feats'])
+            else:
+                raise ValueError(f"Sequence {seq} not found in LMDB database")
+
         if seq not in self.features:
             self._features[seq] = self.transform(seq)
 
@@ -100,6 +112,10 @@ class Featurizer:
     @property
     def name(self) -> str:
         return self._name
+
+    @property
+    def moltype(self) -> str:
+        return self._moltype
 
     @property
     def shape(self) -> int:
@@ -187,14 +203,7 @@ class Featurizer:
             torch.save(features,out_path)
 
         elif str(out_path).endswith('.lmdb'):
-            db = px.Writer(dirpath=str(out_path), map_size_limit=self._map_size, ram_gb_limit=10)
-            for i in tqdm(range(0, len(seq_list), batch_size)):
-                batch_smiles = np.array(seq_list[i:i+batch_size])
-                fingerprints = self.transform(batch_smiles)
-                db.put_samples('feats', fingerprints.numpy())
-
-            db.close()
-            print(f"Processed and stored {len(seq_list)} drug fingerprints in LMDB.")
+            self.process_lmdb(seq_list)
 
     def _read_chunk(file_path, chunk):
         result = {}
@@ -236,8 +245,8 @@ class Featurizer:
             db.put_samples('ids', batch_ids, 'feats', fingerprints.numpy())
 
         print(f"Processed and stored {len(sorted_ids)} drug fingerprints in LMDB.")
-
         # Loading this data will require picking bin ids, then sampling from within those bin ids
+
 
     def process_merged_targets(self, id_to_target):
         """ 
@@ -272,6 +281,47 @@ class Featurizer:
                 seq_data = results.numpy()[np.newaxis, ...]
                 db.put_samples(seq, seq_data)
 
+    def process_lmdb(self, seq_list: T.List[str]):
+        """
+        This function is intended to featurize any dataset into a LMDB file
+        """
+        assert self.path.suffix == '.lmdb', "This function is only for LMDB files"
+        if os.path.exists(self._save_path):
+            print(f"File {self._save_path} exists, skipping processing smiles.")
+            return
+
+        if self.moltype == "target":
+            id_list = []
+            for k in list(seq_list):
+                if any(char.isdigit() for char in k):
+                    continue
+                id_list.append(k)
+            seq_list = id_list
+        
+        # make a dictionary of the drugs with a unique index for each drug determined by the hash of the SMILES
+        seq_dict = {hashlib.md5(seq.encode()).hexdigest(): seq for seq in seq_list}
+        sorted_ids = sorted(seq_dict.keys())
+        id_to_idx = {seq: idx for idx, seq in enumerate(sorted_ids)}
+        np.save(self.path.parent / f'{self.name}_id_to_idx.npy', id_to_idx)
+        db = px.Writer(dirpath=str(self.path), map_size_limit=self._map_size, ram_gb_limit=10)
+
+        batch_size = 2048 * 8 if self.moltype == "drug" else 16
+        for i in tqdm(range(0, len(seq_list), batch_size)):
+            batch_ids = np.array(sorted_ids[i:i+batch_size])
+            batch_seq = [seq_dict[idx] for idx in batch_ids]
+
+            feats = self.transform(batch_seq)
+
+            if self.moltype == "drug":
+                db.put_samples('ids', batch_ids, 'feats', feats.numpy())
+            elif self.moltype == "target":
+                for seq, results in zip(batch_ids, feats):
+                    seq_data = results.numpy()[np.newaxis, ...]
+                    db.put_samples('ids', seq, 'feats', seq_data)
+        db.close()
+
+        print(f"Processed and stored {len(sorted_ids)} {self.moltype} {'fingerprints' if self.moltype == 'drug' else 'sequences'} in LMDB.")
+
     def preload(
         self,
         seq_list: T.List[str],
@@ -302,7 +352,9 @@ class Featurizer:
             elif str(self._save_path).endswith('.pt'):
                 self._features.update(torch.load(self._save_path))
             elif str(self._save_path).endswith('.lmdb'):
-                pass
+                self.db = px.Reader(dirpath=str(self._save_path), lock=False)
+                # use the directory of the lmdb file as the file directory
+                self.id_to_idx = np.load(self.path.parent / f'{self.name}_id_to_idx.npy', allow_pickle=True).item()
 
         else:
             for seq in tqdm(seq_list, disable=not verbose, desc=self.name):
@@ -316,9 +368,13 @@ class Featurizer:
 
         torch.cuda.empty_cache()
 
+    def teardown(self):
+        if hasattr(self, 'db') and self.db is not None:
+            self.db.close()
+
 class ChemGPTFeaturizer(Featurizer):
     def __init__(self, shape: int = 768, save_dir: Path = Path().absolute(), ext: str = "h5", batch_size: int = 32, n_jobs=-1):
-        super().__init__("RoBertaZinc", shape, save_dir, ext, batch_size)
+        super().__init__("RoBertaZinc", shape, "drug", save_dir, ext, batch_size)
         self.transformer = PretrainedHFTransformer(kind='Roberta-Zinc480M-102M', notation='selfies', dtype=float, device=self._device)
 
     def _transform_single(self, smile: str) -> torch.Tensor:
@@ -371,7 +427,7 @@ class MorganFeaturizer(Featurizer):
         n_jobs: int = -1,
         **kwargs
     ):
-        super().__init__("Morgan", shape, save_dir, ext, batch_size, **kwargs)
+        super().__init__("Morgan", shape, "drug", save_dir, ext, batch_size, **kwargs)
 
         self._radius = radius
         # number of CPU workers to convert molecules to morgan fingerprints
@@ -419,7 +475,7 @@ class MorganFeaturizer(Featurizer):
 
 class ProtBertFeaturizer(Featurizer):
     def __init__(self, save_dir: Path = Path().absolute(), per_tok=False, **kwargs):
-        super().__init__("ProtBert", 1024, save_dir, **kwargs)
+        super().__init__("ProtBert", 1024, "target", save_dir, **kwargs)
 
 
         self._device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
@@ -494,7 +550,7 @@ class ProtBertFeaturizer(Featurizer):
 
 class ESM2Featurizer(Featurizer):
     def __init__(self, shape: int = 1280, save_dir: Path = Path().absolute(), ext: str = "h5", batch_size: int = 16, **kwargs):
-        super().__init__("ESM2", shape, save_dir, ext, batch_size, **kwargs)
+        super().__init__("ESM2", shape, "target", save_dir, ext, batch_size, **kwargs)
 
         print(f"Using ESM2 featurizer with {self._batch_size} batches")
         
@@ -567,7 +623,7 @@ class ESM2Featurizer(Featurizer):
 # SaProt Featurizer
 class SaProtFeaturizer(Featurizer):
     def __init__(self, shape: int = 1280, save_dir: Path = Path().absolute(), ext: str = "h5", batch_size: int = 16, **kwargs):
-        super().__init__("SaProt", shape, save_dir, ext, batch_size, **kwargs)
+        super().__init__("SaProt", shape, "target", save_dir, ext, batch_size, **kwargs)
         
         # Load SaProt model
         model_path = "SaProt_650M_AF2.pt"
@@ -606,7 +662,7 @@ class SaProtFeaturizer(Featurizer):
         except Exception as e:
             print(f"Error featurizing single sequence: {seq}")
             if isinstance(seq, str):
-                return torch.zeros((len(seq), self.shape)) # zero vector for each token
+                return torch.zeros((len(seq)//2, self.shape)) # zero vector for each token
             else:
                 return torch.zeros((1, self.shape))
 
