@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import torch
 import os
+import hashlib
 
 import numpy as np
 import pandas as pd
@@ -319,6 +320,8 @@ class DTIDataModule(pl.LightningDataModule):
         self.drug_featurizer = drug_featurizer
         self.target_featurizer = target_featurizer
 
+        self.drug_db, self.target_db = None, None
+
     def prepare_data(self):
         """
         Featurize drugs and targets and save them to disk if they don't already exist
@@ -407,6 +410,12 @@ class DTIDataModule(pl.LightningDataModule):
 
     def test_dataloader(self):
         return DataLoader(self.data_test, **self._loader_kwargs)
+
+    def teardown(self):
+        if self.drug_db is not None:
+            self.drug_db.close()
+        if self.target_db is not None:
+            self.target_db.close()
 
 class DTIStructDataModule(DTIDataModule):
     """ DataModule used for training on drug-target interaction data.
