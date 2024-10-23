@@ -473,7 +473,7 @@ class DTIDataModule(pl.LightningDataModule):
     def test_dataloader(self):
         return DataLoader(self.data_test, **self._loader_kwargs)
 
-    def teardown(self, stage):
+    def teardown(self, stage:str):
         self.drug_featurizer.teardown(stage)
         self.target_featurizer.teardown(stage)
 
