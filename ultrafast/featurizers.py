@@ -62,6 +62,7 @@ class Featurizer:
         self._batch_size = batch_size
 
         self.id_to_idx = None
+        self.ext = ext
         self._map_size = 10000
         if ext == 'lmdb' and 'map_size' in kwargs and kwargs['map_size'] is not None:
             self._map_size = kwargs['map_size']
@@ -317,7 +318,8 @@ class Featurizer:
             elif self.moltype == "target":
                 for seq, results in zip(batch_ids, feats):
                     seq_data = results.numpy()[np.newaxis, ...]
-                    db.put_samples('ids', seq, 'feats', seq_data)
+                    seq_arr = np.array(seq)[np.newaxis, ...]
+                    db.put_samples('ids', seq_arr, 'feats', seq_data)
         db.close()
 
         print(f"Processed and stored {len(sorted_ids)} {self.moltype} {'fingerprints' if self.moltype == 'drug' else 'sequences'} in LMDB.")
