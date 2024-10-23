@@ -240,7 +240,7 @@ class DrugTargetCoembeddingLightning(pl.LightningModule):
                 target_projection.view(-1, self.latent_dim, 1),
             ).squeeze()
 
-        return similarity, attn_head
+        return similarity, drug_projection, target_projection, attn_head
 
     def configure_optimizers(self):
         optimizers = []
@@ -276,7 +276,7 @@ class DrugTargetCoembeddingLightning(pl.LightningModule):
             drug, protein, label = batch
         else:
             drug, protein, binding_site, label = batch
-        similarity, attn_head = self.forward(drug, protein)
+        similarity, drug_proj, protein_proj, attn_head = self.forward(drug, protein)
 
         if self.classify:
             similarity = torch.squeeze(self.sigmoid(similarity * 5))
@@ -284,7 +284,7 @@ class DrugTargetCoembeddingLightning(pl.LightningModule):
         loss = self.loss_fct(similarity, label) 
         infoloss = 0
         if self.InfoNCEWeight > 0:
-            infoloss = self.infoNCE_loss_fct(drug, protein, label)
+            infoloss = self.infoNCE_loss_fct(drug_proj, protein_proj, label)
 
         ag_loss = 0
         if self.AG != 0 and self.args.task == 'binding_site':

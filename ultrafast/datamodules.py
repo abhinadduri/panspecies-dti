@@ -234,7 +234,6 @@ class BindingSiteDataset(Dataset):
     def __getitem__(self, i: int):
         drug = self.drug_featurizer(self.drugs.iloc[i]) 
         target = self.target_featurizer(self.targets.iloc[i])
-        print(target)
         label = torch.tensor(self.labels.iloc[i], dtype=torch.float32)
 
         # create a torch.tensor from the resnums
