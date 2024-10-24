@@ -370,7 +370,7 @@ class Featurizer:
 
         torch.cuda.empty_cache()
 
-    def teardown(self):
+    def teardown(self, stage: str):
         if hasattr(self, 'db') and self.db is not None:
             self.db.close()
 
