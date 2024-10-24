@@ -551,7 +551,7 @@ class BindSiteDataModule(DTIDataModule):
         self.target_featurizer.ext = ".lmdb"
         self.drug_featurizer._save_path = Path(os.path.splitext(str(self.drug_featurizer.path))[0]+self.drug_featurizer.ext)
         self.target_featurizer._save_path = Path(os.path.splitext(str(self.target_featurizer.path))[0]+self.target_featurizer.ext)
-        self.target_featurizer._map_size = 100000
+        self.target_featurizer._map_size = 300000
         self._bindingsite_column = "Binding Idx"
         self._resnum_column = "Resnums"
         self._data_dir = Path(data_dir)
