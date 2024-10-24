@@ -70,6 +70,7 @@ def train_cli():
     parser.add_argument("--num-heads-agg", type=int, default=4, help="Number of attention heads for learned aggregation", dest="num_heads_agg")
     parser.add_argument("--dropout", type=float, help="Dropout rate for transformer", dest="dropout")
     parser.add_argument("--AG", type=float, help="Attention Guidance Loss Weight, if 0 then no AG loss")
+    parser.add_argument("--AG-type", default='mse', choices=['mse','mae'], help="Attention Guidance Loss Type: mse or mae")
     parser.add_argument("--PDG", type=float, help="Pattern Decorrelation Loss Weight, if 0 then no PDG loss")
     parser.add_argument("--batch-size", type=int, default=32, help="batch size for training/val/test")
     parser.add_argument("--num-workers", type=int, default=0, help="number of workers for intial data processing and dataloading during training")
@@ -105,6 +106,7 @@ def train(
     drug_layers: int,
     dropout: float,
     AG: float,
+    AG_type: float,
     PDG: float,
     batch_size: int,
     num_workers: int,
@@ -138,6 +140,7 @@ def train(
         drug_layers=drug_layers,
         dropout=dropout,
         AG=AG,
+        AG_type=AG_type,
         PDG=PDG,
         batch_size=batch_size,
         num_workers=num_workers,

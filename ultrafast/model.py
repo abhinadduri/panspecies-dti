@@ -174,7 +174,7 @@ class DrugTargetCoembeddingLightning(pl.LightningModule):
         self.AG = 0
         if args.AG:
             self.AG = args.AG
-            self.AG_loss = AttentionGuidanceLoss()
+            self.AG_loss = AttentionGuidanceLoss(loss=args.AG_type)
 
         self.PDG = 0
         if args.PDG:

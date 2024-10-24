@@ -125,10 +125,10 @@ class InfoNCELoss(nn.Module):
        return loss
 
 class AttentionGuidanceLoss(torch.nn.Module):
-    def __init__(self, loss='mse_loss'):
+    def __init__(self, loss='mse'):
         super(AttentionGuidanceLoss, self).__init__()
 
-        self.loss = F.mse_loss if loss == 'mse_loss' else F.l1_loss
+        self.loss = F.mse_loss if loss == 'mse' else F.l1_loss
 
 
     def forward(self, attention_head, binding_site):
@@ -143,7 +143,7 @@ class AttentionGuidanceLoss(torch.nn.Module):
 
 
         # Calculate the loss
-        loss = F.mse_loss(attention_head, binding_site)
+        loss = self.loss(attention_head, binding_site)
 
         return loss
 
