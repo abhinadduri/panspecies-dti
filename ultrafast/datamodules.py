@@ -1045,7 +1045,7 @@ class LeashDataModule(pl.LightningDataModule):
             )
 
 class MergedDataset(Dataset):
-    def __init__(self, split, drug_db, target_db, id_to_smiles, id_to_target, tdim=1280, exclusion_file=None, neg_sample_ratio=1):
+    def __init__(self, split, drug_db, target_db, id_to_smiles, id_to_target, tdim=1280, exclusion_file=None, neg_sample_ratio=3):
         """
         Constructor for the merged dataset, pooling DTI data from PubChem, BindingDB, and ChEMBL.
 
