@@ -33,6 +33,14 @@ Links to download pre-trained models are in `checkpoints/README.md`.
 
 Once downloaded, just `gunzip` the file to get the ready-to-use model checkpoint.
 
+# Download MERGED dataset
+Script to download splits and data:
+```
+cd data/MERGED/huge_data/
+bash download.sh
+cd -
+```
+
 # Embed proteins and molecules
 ```
 # Get target embeddings with pre-trained model

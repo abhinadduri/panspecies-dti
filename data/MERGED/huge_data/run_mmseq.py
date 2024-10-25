@@ -1,12 +1,10 @@
 # This script runs MMSeq2 on the LIT-PCBA dataset to only retain uniprot id's with sequence similarity <90% to LIT-PCBA
 
-# TODO: get mmseq results.
-# TODO: concat train / val / test for this.
-
 import json
 import numpy as np
 import subprocess
 import os
+import sys
 
 def run_mmseqs2(query_file, target_file, output_file, tmp_dir, threshold):
     commands = [
@@ -69,4 +67,4 @@ def main(threshold=0.9):
     subprocess.run("rm targetDB*; rm queryDB*; rm resultDB*; rm -rf tmp", shell=True, check=True)
 
 if __name__ == "__main__":
-    main(threshold=0.9)
+    main(threshold=float(sys.argv[1]))
