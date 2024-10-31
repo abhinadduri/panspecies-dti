@@ -124,11 +124,22 @@ class InfoNCELoss(nn.Module):
        loss = torch.sum(all_losses) / (2 * batch_size)
        return loss
 
+def reg_loss(pred, target):
+    p = target.sum(1)
+    n = (1-target).sum(1)
+    return ((p+n+1)/(n+1)*(pred * (1-target)).sum(1) - (p+n+1)/(p+1)*(pred * target).sum(1)).mean()
+
 class AttentionGuidanceLoss(torch.nn.Module):
     def __init__(self, loss='mse'):
         super(AttentionGuidanceLoss, self).__init__()
 
-        self.loss = F.mse_loss if loss == 'mse' else F.l1_loss
+        self.loss = None
+        if loss == 'mse':
+            self.loss = F.mse_loss
+        elif loss == 'mae':
+            self.loss = F.l1_loss
+        elif loss == 'reg':
+            self.loss = reg_loss
 
 
     def forward(self, attention_head, binding_site):
