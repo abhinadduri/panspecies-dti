@@ -68,9 +68,10 @@ def train_cli():
     parser.add_argument("--num-layers-target", type=int, help="Number of layers in target transformer", dest="num_layers_target")
     parser.add_argument("--drug-layers", type=int, choices=[1, 2], help="Number of layers in drug transformer", dest="drug_layers")
     parser.add_argument("--num-heads-agg", type=int, default=4, help="Number of attention heads for learned aggregation", dest="num_heads_agg")
+    parser.add_argument("--agg-use-avg", action="store_true", help="Use the average of the sequence as the query")
     parser.add_argument("--dropout", type=float, help="Dropout rate for transformer", dest="dropout")
     parser.add_argument("--AG", type=float, help="Attention Guidance Loss Weight, if 0 then no AG loss")
-    parser.add_argument("--AG-type", default='mse', choices=['mse','mae'], help="Attention Guidance Loss Type: mse or mae")
+    parser.add_argument("--AG-type", default='mse', choices=['mse','mae','reg'], help="Attention Guidance Loss Type: mse or mae")
     parser.add_argument("--PDG", type=float, help="Pattern Decorrelation Loss Weight, if 0 then no PDG loss")
     parser.add_argument("--batch-size", type=int, default=32, help="batch size for training/val/test")
     parser.add_argument("--num-workers", type=int, default=0, help="number of workers for intial data processing and dataloading during training")
@@ -112,6 +113,7 @@ def train(
     num_workers: int,
     no_wandb: bool,
     num_heads_agg: int,
+    agg_use_avg: bool,
     model_size: str,
     ship_model: str,
     eval_pcba: bool,
@@ -146,6 +148,7 @@ def train(
         num_workers=num_workers,
         no_wandb=no_wandb,
         num_heads_agg=num_heads_agg,
+        agg_use_avg=agg_use_avg,
         model_size=model_size,
         ship_model=ship_model,
         eval_pcba=eval_pcba,
@@ -235,6 +238,8 @@ def train(
         elif config.task != 'binding_site' and config.target_featurizer == 'SaProtFeaturizer':
             datamodule = DTIStructDataModule(**task_dm_kwargs)
         elif config.task == 'binding_site':
+            config.lr_t0 = 1
+            config.watch_metric = "val/aupr_bs"
             datamodule = BindSiteDataModule(**task_dm_kwargs)
         else:
             datamodule = DTIDataModule(**task_dm_kwargs)
