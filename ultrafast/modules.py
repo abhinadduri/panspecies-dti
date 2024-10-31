@@ -86,6 +86,23 @@ class TargetEmbedding(nn.Module):
         x = self.transformer(x)
         return x[:,0] if self.out_type == "cls" else x[:,1:].mean(dim=1)
 
+class AverageNonZeroVectors(torch.nn.Module):
+    def __init__(self, eps=1e-8):
+        super(AverageNonZeroVectors, self).__init__()
+        self.eps = eps
+
+    def forward(self, input_batch):
+        non_zero_mask = (input_batch.sum(dim=-1) != 0).float()
+        num_non_zero = non_zero_mask.sum(dim=1)
+        batch_sum = torch.sum(input_batch * non_zero_mask.unsqueeze(-1), dim=1)
+        batch_avg = batch_sum / (num_non_zero.unsqueeze(-1) + self.eps)
+
+        if torch.isnan(batch_avg).any() or torch.isinf(batch_avg).any():
+            print("NaN or Inf found in averaging operation")
+            batch_avg = torch.nan_to_num(batch_avg, nan=0.0, posinf=1.0, neginf=-1.0)
+
+        return batch_avg
+
 # from https://github.com/facebookresearch/deit/blob/main/patchconvnet_models.py
 class Learned_Aggregation_Layer(nn.Module):
     def __init__(
@@ -96,6 +113,7 @@ class Learned_Aggregation_Layer(nn.Module):
         qk_scale: float = None,
         attn_drop: float = 0.0,
         proj_drop: float = 0.0,
+        use_avg: bool = False,
     ):
         super().__init__()
         self.num_heads = num_heads
@@ -103,7 +121,12 @@ class Learned_Aggregation_Layer(nn.Module):
         # NOTE scale factor was wrong in my original version, can set manually to be compat with prev weights
         self.scale = qk_scale if qk_scale is not None else head_dim**-0.5
 
+        self.cls_tokenizer = None
         self.cls_token = nn.Parameter(torch.randn(1, 1, dim))
+        self.use_avg = use_avg
+        if use_avg == True:
+            self.cls_token = None
+            self.cls_tokenizer = AverageNonZeroVectors()
         self.q = nn.Linear(dim, dim, bias=qkv_bias)
         self.k = nn.Linear(dim, dim, bias=qkv_bias)
         self.v = nn.Linear(dim, dim, bias=qkv_bias)
@@ -116,7 +139,10 @@ class Learned_Aggregation_Layer(nn.Module):
         if x.dim() == 2:
             x = x.unsqueeze(0)
         B, N, C = x.shape
-        cls_tokens = self.cls_token.repeat(B, 1, 1)
+        if self.use_avg == False:
+            cls_tokens = self.cls_token.repeat(B, 1, 1)
+        else:
+            cls_tokens = self.cls_tokenizer(x)
         q = self.q(cls_tokens).reshape(B, 1, self.num_heads, C // self.num_heads).permute(0, 2, 1, 3)
         k = self.k(x).reshape(B, N, self.num_heads, C // self.num_heads).permute(0, 2, 1, 3)
 
@@ -136,9 +162,9 @@ class Learned_Aggregation_Layer(nn.Module):
         return x_cls.squeeze(), soft_attn
 
 class LearnedAgg_Projection(nn.Module):
-    def __init__(self, target_dim, latent_dim, activation, num_heads=1, attn_drop=0., proj_drop=0.):
+    def __init__(self, target_dim, latent_dim, activation, num_heads=1, attn_drop=0., proj_drop=0., use_avg=False):
         super().__init__()
-        self.proj = Learned_Aggregation_Layer(target_dim, num_heads, attn_drop=attn_drop, proj_drop=proj_drop)
+        self.proj = Learned_Aggregation_Layer(target_dim, num_heads, attn_drop=attn_drop, proj_drop=proj_drop, use_avg=use_avg)
         self.linear = nn.Linear(target_dim, latent_dim)
         self.non_linearity = activation()
 
@@ -148,23 +174,6 @@ class LearnedAgg_Projection(nn.Module):
         return self.non_linearity(proj), attn_head
 
 
-class AverageNonZeroVectors(torch.nn.Module):
-    def __init__(self, eps=1e-8):
-        super(AverageNonZeroVectors, self).__init__()
-        self.eps = eps
-
-    def forward(self, input_batch):
-        non_zero_mask = (input_batch.sum(dim=-1) != 0).float()
-        num_non_zero = non_zero_mask.sum(dim=1)
-        batch_sum = torch.sum(input_batch * non_zero_mask.unsqueeze(-1), dim=1)
-        batch_avg = batch_sum / (num_non_zero.unsqueeze(-1) + self.eps)
-
-        if torch.isnan(batch_avg).any() or torch.isinf(batch_avg).any():
-            print("NaN or Inf found in averaging operation")
-            batch_avg = torch.nan_to_num(batch_avg, nan=0.0, posinf=1.0, neginf=-1.0)
-
-        return batch_avg
-
 class LargeProteinProjection(nn.Module):
     def __init__(self, target_dim, latent_dim, activation, num_heads=1, attn_drop=0., proj_drop=0.):
         super().__init__()
@@ -173,15 +182,15 @@ class LargeProteinProjection(nn.Module):
                 nn.LayerNorm(target_dim),
                 activation(),
                 nn.Linear(target_dim, latent_dim),
-                nn.Dropout(dropout),
+                nn.Dropout(proj_drop),
                 nn.LayerNorm(latent_dim),
                 activation(),
                 nn.Linear(latent_dim, latent_dim),
-                nn.Dropout(dropout),
+                nn.Dropout(proj_dropout),
                 nn.LayerNorm(latent_dim),
                 activation(),
                 nn.Linear(latent_dim, latent_dim),
-                nn.Dropout(dropout),
+                nn.Dropout(proj_dropout),
                 nn.LayerNorm(latent_dim),
             )
         self.non_linearity = activation()

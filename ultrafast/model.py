@@ -2,6 +2,7 @@ import torch
 import wandb
 from torch import nn
 import torch.nn.functional as F
+from torch.nn.utils.rnn import pad_sequence
 
 from ultrafast.modules import LearnedAgg_Projection, LargeProteinProjection, TargetEmbedding, Attention, Learned_Aggregation_Layer, AverageNonZeroVectors
 from ultrafast.loss import MarginScheduledLossFunction, InfoNCELoss, AttentionGuidanceLoss, PatternDecorrelationLoss
@@ -86,7 +87,7 @@ class DrugTargetCoembeddingLightning(pl.LightningModule):
         elif args.prot_proj == "transformer":
             protein_projector = TargetEmbedding( self.target_dim, self.latent_dim, num_layers_target, dropout=dropout, out_type=args.out_type)
         elif args.prot_proj == "agg":
-            self.target_projector = LearnedAgg_Projection(self.target_dim, self.latent_dim, self.activation, num_heads=args.num_heads_agg, attn_drop=dropout, proj_drop=dropout)
+            self.target_projector = LearnedAgg_Projection(self.target_dim, self.latent_dim, self.activation, num_heads=args.num_heads_agg, attn_drop=dropout, proj_drop=dropout, use_avg=args.agg_use_avg)
 
         if 'model_size' in args and args.model_size == "large":  # override the above settings and use a large model for drug and target
             self.drug_projector = nn.Sequential(
@@ -175,6 +176,12 @@ class DrugTargetCoembeddingLightning(pl.LightningModule):
         if args.AG:
             self.AG = args.AG
             self.AG_loss = AttentionGuidanceLoss(loss=args.AG_type)
+            self.bs_auc = torchmetrics.AUROC(task="binary")
+            self.bs_aupr = torchmetrics.AveragePrecision(task="binary")
+            self.bs_iou = torchmetrics.JaccardIndex(task="binary").to(self.device)
+            self.metrics['auc_bs'] = self.bs_auc
+            self.metrics['aupr_bs'] = self.bs_aupr
+            self.metrics['iou_bs'] = self.bs_iou
 
         self.PDG = 0
         if args.PDG:
@@ -198,10 +205,15 @@ class DrugTargetCoembeddingLightning(pl.LightningModule):
 
         self.save_hyperparameters()
 
-        self.val_step_outputs = []
-        self.val_step_targets = []
-        self.test_step_outputs = []
-        self.test_step_targets = []
+        self.log_vals = {'val': {'outputs':[], 'targets':[], 'bs_outputs':None, 'bs_targets': None},
+                    'test':{'outputs':[],'targets':[], 'bs_outputs':None, 'bs_targets':None}}
+
+        if 'auc_bs' in self.metrics:
+            self.log_vals['val']['bs_outputs'] = []
+            self.log_vals['val']['bs_targets'] = []
+            self.log_vals['test']['bs_outputs'] = []
+            self.log_vals['test']['bs_targets'] = []
+
 
     def forward(self, drug, target):
         model_size = self.args.model_size
@@ -298,7 +310,7 @@ class DrugTargetCoembeddingLightning(pl.LightningModule):
         if train:
             return loss * self.CEWeight, {'AG':ag_loss, 'PDG':pdg_loss, "InfoNCE": infoloss}
         else:
-            return loss, {'AG':ag_loss, 'PDG':pdg_loss, "InfoNCE": infoloss}, similarity
+            return loss, {'AG':ag_loss, 'PDG':pdg_loss, "InfoNCE": infoloss}, similarity, attn_head
 
     def training_step(self, batch, batch_idx):
         if self.contrastive and self.current_epoch % 2 == 1:
@@ -347,7 +359,7 @@ class DrugTargetCoembeddingLightning(pl.LightningModule):
         if self.global_step == 0 and self.global_rank == 0 and not self.args.no_wandb:
             wandb.define_metric("val/aupr", summary="max")
         label = batch[-1]
-        loss, oth_losses, similarity = self.non_contrastive_step(batch, train=False)
+        loss, oth_losses, similarity, attn_head = self.non_contrastive_step(batch, train=False)
         self.log("val/loss", loss, sync_dist=True if self.trainer.num_devices > 1 else False)
         if self.InfoNCEWeight > 0:
             self.log("val/info_loss", oth_losses["InfoNCE"], sync_dist=True if self.trainer.num_devices > 1 else False)
@@ -358,49 +370,48 @@ class DrugTargetCoembeddingLightning(pl.LightningModule):
         if self.PDG != 0:
             self.log("val/PDG_loss", oth_losses["PDG"])
 
-        if self.AG != 0 and self.args.task == 'bindingdb_bs':
-            attn_loss = self.AG_loss(attn_head, binding_site)
-            self.log("val/AG_loss", attn_loss)
-
-        if self.PDG != 0:
-            pdg_loss = self.PDG_loss(attn_head)
-            self.log("val/PDG_loss", pdg_loss)
-
-        self.val_step_outputs.extend(similarity)
-        self.val_step_targets.extend(label)
+        self.log_vals['val']['outputs'].extend(similarity)
+        self.log_vals['val']['targets'].extend(label)
+        if self.AG != 0 and self.args.task == "binding_site":
+            self.log_vals['val']['bs_targets'].extend(batch[-2])
+            self.log_vals['val']['bs_outputs'].extend(attn_head[:,0,:])
 
         return {"loss": loss, "preds": similarity, "target": label}
 
     def on_validation_epoch_end(self):
-        for name, metric in self.metrics.items():
-            if self.classify:
-                metric(torch.Tensor(self.val_step_outputs), torch.Tensor(self.val_step_targets).to(torch.int))
-            else:
-                metric(torch.Tensor(self.val_step_outputs).cuda(), torch.Tensor(self.val_step_targets).to(torch.float).cuda())
-            self.log(f"val/{name}", metric, on_step=False, on_epoch=True, sync_dist=True if self.trainer.num_devices > 1 else False)
-
-        self.val_step_outputs.clear()
-        self.val_step_targets.clear()
+        self.compute_metrics("val")
 
     def test_step(self, batch, batch_idx):
         label = batch[-1]
-        _, _, similarity = self.non_contrastive_step(batch, train=False)
+        _, _, similarity, attn_head = self.non_contrastive_step(batch, train=False)
 
-        self.test_step_outputs.extend(similarity)
-        self.test_step_targets.extend(label)
+        self.log_vals['test']['outputs'].extend(similarity)
+        self.log_vals['test']['targets'].extend(label)
+        if self.AG != 0 and self.args.task == "binding_site":
+            self.log_vals['test']['bs_targets'].extend(batch[-2])
+            self.log_vals['test']['bs_outputs'].extend(attn_head[:,0,:])
 
         return {"preds": similarity, "target": label}
 
     def on_test_epoch_end(self):
-        for name, metric in self.metrics.items():
-            if self.classify:
-                metric(torch.Tensor(self.test_step_outputs), torch.Tensor(self.test_step_targets).to(torch.int))
-            else:
-                metric(torch.Tensor(self.test_step_outputs).cuda(), torch.Tensor(self.test_step_targets).to(torch.float).cuda())
-            self.log(f"test/{name}", metric, on_step=False, on_epoch=True, sync_dist=True if self.trainer.num_devices > 1 else False)
+        self.compute_metrics("test")
 
-        self.test_step_outputs.clear()
-        self.test_step_targets.clear()
+    def compute_metrics(self, stage):
+        for name, metric in self.metrics.items():
+            if 'bs' in name:
+                metric(pad_sequence(self.log_vals[stage]['bs_outputs']).to(self.device), pad_sequence(self.log_vals[stage]['bs_targets']).to(torch.int).to(self.device))
+            if self.classify:
+                metric(torch.Tensor(self.log_vals[stage]['outputs']).to(self.device), torch.Tensor(self.log_vals[stage]['targets']).to(torch.int).to(self.device))
+            else:
+                metric(torch.Tensor(self.log_vals[stage]['outputs']).cuda(), torch.Tensor(self.log_vals[stage]['targets']).to(torch.float).cuda())
+            self.log(f"{stage}/{name}", metric, on_step=False, on_epoch=True, sync_dist=True if self.trainer.num_devices > 1 else False)
+            # print(f"{stage}/{name}:{metric.compute()}")
+
+        self.log_vals[stage]['outputs'].clear()
+        self.log_vals[stage]['targets'].clear()
+        if isinstance(self.log_vals[stage]['bs_outputs'],list):
+            self.log_vals[stage]['bs_outputs'].clear()
+            self.log_vals[stage]['bs_targets'].clear()
 
     def embed(self, x, sample_type="drug"):
         model_size = self.args.model_size
