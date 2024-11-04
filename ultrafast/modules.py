@@ -2,6 +2,7 @@ import torch
 import wandb
 from torch import nn
 import torch.nn.functional as F
+from rotary_embedding_torch import RotaryEmbedding
 
 class FeedForward(nn.Module):
     def __init__(self, dim, hidden_dim, dropout = 0.):
@@ -114,6 +115,7 @@ class Learned_Aggregation_Layer(nn.Module):
         attn_drop: float = 0.0,
         proj_drop: float = 0.0,
         use_avg: bool = False,
+        rope: bool = False,
     ):
         super().__init__()
         self.num_heads = num_heads
@@ -127,6 +129,9 @@ class Learned_Aggregation_Layer(nn.Module):
         if use_avg == True:
             self.cls_token = None
             self.cls_tokenizer = AverageNonZeroVectors()
+        self.pos_embedding = None
+        if rope:
+            self.pos_embedding = RotaryEmbedding(dim = head_dim//2) # https://github.com/lucidrains/rotary-embedding-torch/issues/4
         self.q = nn.Linear(dim, dim, bias=qkv_bias)
         self.k = nn.Linear(dim, dim, bias=qkv_bias)
         self.v = nn.Linear(dim, dim, bias=qkv_bias)
@@ -145,6 +150,8 @@ class Learned_Aggregation_Layer(nn.Module):
             cls_tokens = self.cls_tokenizer(x)
         q = self.q(cls_tokens).reshape(B, 1, self.num_heads, C // self.num_heads).permute(0, 2, 1, 3)
         k = self.k(x).reshape(B, N, self.num_heads, C // self.num_heads).permute(0, 2, 1, 3)
+        if self.pos_embedding is not None:
+            k = self.pos_embedding.rotate_queries_or_keys(k)
 
         q = q * self.scale
         v = self.v(x).reshape(B, N, self.num_heads, C // self.num_heads).permute(0, 2, 1, 3)
@@ -162,9 +169,9 @@ class Learned_Aggregation_Layer(nn.Module):
         return x_cls.squeeze(), soft_attn
 
 class LearnedAgg_Projection(nn.Module):
-    def __init__(self, target_dim, latent_dim, activation, num_heads=1, attn_drop=0., proj_drop=0., use_avg=False):
+    def __init__(self, target_dim, latent_dim, activation, num_heads=1, attn_drop=0., proj_drop=0., use_avg=False, rope=False):
         super().__init__()
-        self.proj = Learned_Aggregation_Layer(target_dim, num_heads, attn_drop=attn_drop, proj_drop=proj_drop, use_avg=use_avg)
+        self.proj = Learned_Aggregation_Layer(target_dim, num_heads, attn_drop=attn_drop, proj_drop=proj_drop, use_avg=use_avg, rope=rope)
         self.linear = nn.Linear(target_dim, latent_dim)
         self.non_linearity = activation()
 
@@ -198,6 +205,70 @@ class LargeProteinProjection(nn.Module):
     def forward(self, x):
         proj, attn_head = self.proj(x)
         proj = self.res(proj)
+        return self.non_linearity(proj), attn_head
+
+#from https://github.com/HannesStark/protein-localization/blob/master/models/light_attention.py
+class LightAttention(nn.Module):
+    def __init__(self, embeddings_dim=1024, output_dim=11, dropout=0.25, kernel_size=9, conv_dropout: float = 0.25):
+        super(LightAttention, self).__init__()
+
+        self.feature_convolution = nn.Conv1d(embeddings_dim, embeddings_dim, kernel_size, stride=1,
+                                             padding=kernel_size // 2)
+        self.attention_convolution = nn.Conv1d(embeddings_dim, embeddings_dim, kernel_size, stride=1,
+                                               padding=kernel_size // 2)
+
+        self.softmax = nn.Softmax(dim=-1)
+
+        self.dropout = nn.Dropout(conv_dropout)
+
+        self.linear = nn.Sequential(
+            nn.Linear(2 * embeddings_dim, embeddings_dim),
+            nn.Dropout(dropout),
+            nn.ReLU(),
+            nn.BatchNorm1d(embeddings_dim)
+        )
+
+        self.output = nn.Linear(embeddings_dim, output_dim)
+
+    def forward(self, x: torch.Tensor, **kwargs) -> torch.Tensor:
+        """
+        Args:
+            x: [batch_size, embeddings_dim, sequence_length] embedding tensor that should be classified
+            mask: [batch_size, sequence_length] mask corresponding to the zero padding used for the shorter sequecnes in the batch. All values corresponding to padding are False and the rest is True.
+
+        Returns:
+            classification: [batch_size,output_dim] tensor with logits
+        """
+        mask = (torch.abs(x).sum(dim=-1) == 0).float()
+        x = x.permute(0,2,1)
+        o = self.feature_convolution(x)  # [batch_size, embeddings_dim, sequence_length]
+        o = self.dropout(o)  # [batch_gsize, embeddings_dim, sequence_length]
+        attention = self.attention_convolution(x)  # [batch_size, embeddings_dim, sequence_length]
+
+        # mask out the padding to which we do not want to pay any attention (we have the padding because the sequences have different lenghts).
+        # This padding is added by the dataloader when using the padded_permuted_collate function in utils/general.py
+        attention = attention.masked_fill(mask[:, None, :] == False, -1e9)
+
+        # code used for extracting embeddings for UMAP visualizations
+        # extraction =  torch.sum(x * self.softmax(attention), dim=-1)
+        # extraction = self.id0(extraction)
+
+        o1 = torch.sum(o * self.softmax(attention), dim=-1)  # [batchsize, embeddings_dim]
+        o2, _ = torch.max(o, dim=-1)  # [batchsize, embeddings_dim]
+        o = torch.cat([o1, o2], dim=-1)  # [batchsize, 2*embeddings_dim]
+        o = self.linear(o)  # [batchsize, 32]
+        return self.output(o), attention  # [batchsize, output_dim]
+
+class LightAttention_Projection(nn.Module):
+    def __init__(self, target_dim, latent_dim, activation, dropout=0., conv_dropout=0.):
+        super().__init__()
+        self.proj = LightAttention(embeddings_dim=target_dim, output_dim=target_dim, dropout=dropout, conv_dropout=conv_dropout)
+        self.linear = nn.Linear(target_dim, latent_dim)
+        self.non_linearity = activation()
+
+    def forward(self, x):
+        proj, attn_head = self.proj(x)
+        proj = self.linear(proj)
         return self.non_linearity(proj), attn_head
 
 class HugeProteinProjection(nn.Module):

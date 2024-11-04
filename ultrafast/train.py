@@ -62,13 +62,14 @@ def train_cli():
     parser.add_argument("--d", "--device", default=0, type=int, help="CUDA device", dest="device")
     parser.add_argument("--verbosity", type=int, help="Level at which to log", dest="verbosity")
     parser.add_argument("--checkpoint", default=None, help="Model weights to start from")
-    parser.add_argument('--prot-proj', choices=["avg","agg","transformer", "genagg"], help="Change the protein projector method")
+    parser.add_argument('--prot-proj', choices=["avg","agg","transformer", "hannes"], help="Change the protein projector method")
     parser.add_argument('--out-type', choices=['cls','mean'], help="use cls token or mean of everything else")
 
     parser.add_argument("--num-layers-target", type=int, help="Number of layers in target transformer", dest="num_layers_target")
     parser.add_argument("--drug-layers", type=int, choices=[1, 2], help="Number of layers in drug transformer", dest="drug_layers")
     parser.add_argument("--num-heads-agg", type=int, default=4, help="Number of attention heads for learned aggregation", dest="num_heads_agg")
     parser.add_argument("--agg-use-avg", action="store_true", help="Use the average of the sequence as the query")
+    parser.add_argument("--rope", action="store_true", help="Use RoPE in LearnedAgg")
     parser.add_argument("--dropout", type=float, help="Dropout rate for transformer", dest="dropout")
     parser.add_argument("--AG", type=float, help="Attention Guidance Loss Weight, if 0 then no AG loss")
     parser.add_argument("--AG-type", default='mse', choices=['mse','mae','reg'], help="Attention Guidance Loss Type: mse or mae")
@@ -114,6 +115,7 @@ def train(
     no_wandb: bool,
     num_heads_agg: int,
     agg_use_avg: bool,
+    rope: bool,
     model_size: str,
     ship_model: str,
     eval_pcba: bool,
@@ -149,6 +151,7 @@ def train(
         no_wandb=no_wandb,
         num_heads_agg=num_heads_agg,
         agg_use_avg=agg_use_avg,
+        rope=rope,
         model_size=model_size,
         ship_model=ship_model,
         eval_pcba=eval_pcba,

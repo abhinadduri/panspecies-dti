@@ -4,7 +4,7 @@ from torch import nn
 import torch.nn.functional as F
 from torch.nn.utils.rnn import pad_sequence
 
-from ultrafast.modules import LearnedAgg_Projection, LargeProteinProjection, TargetEmbedding, Attention, Learned_Aggregation_Layer, AverageNonZeroVectors
+from ultrafast.modules import LearnedAgg_Projection, LargeProteinProjection, TargetEmbedding, Attention, Learned_Aggregation_Layer, AverageNonZeroVectors, LightAttention_Projection
 from ultrafast.loss import MarginScheduledLossFunction, InfoNCELoss, AttentionGuidanceLoss, PatternDecorrelationLoss
 
 import pytorch_lightning as pl
@@ -87,7 +87,9 @@ class DrugTargetCoembeddingLightning(pl.LightningModule):
         elif args.prot_proj == "transformer":
             protein_projector = TargetEmbedding( self.target_dim, self.latent_dim, num_layers_target, dropout=dropout, out_type=args.out_type)
         elif args.prot_proj == "agg":
-            self.target_projector = LearnedAgg_Projection(self.target_dim, self.latent_dim, self.activation, num_heads=args.num_heads_agg, attn_drop=dropout, proj_drop=dropout, use_avg=args.agg_use_avg)
+            self.target_projector = LearnedAgg_Projection(self.target_dim, self.latent_dim, self.activation, num_heads=args.num_heads_agg, attn_drop=dropout, proj_drop=dropout, use_avg=args.agg_use_avg, rope=args.rope)
+        elif args.prot_proj == "hannes":
+            self.target_projector = LightAttention_Projection(self.target_dim, self.latent_dim, self.activation, dropout=dropout, conv_dropout=dropout)
 
         if 'model_size' in args and args.model_size == "large":  # override the above settings and use a large model for drug and target
             self.drug_projector = nn.Sequential(
@@ -205,10 +207,13 @@ class DrugTargetCoembeddingLightning(pl.LightningModule):
 
         self.save_hyperparameters()
 
-        self.log_vals = {'val': {'outputs':[], 'targets':[], 'bs_outputs':None, 'bs_targets': None},
+        self.log_vals = {'train': {'bs_outputs':None, 'bs_targets': None},
+                         'val': {'outputs':[], 'targets':[], 'bs_outputs':None, 'bs_targets': None},
                     'test':{'outputs':[],'targets':[], 'bs_outputs':None, 'bs_targets':None}}
 
         if 'auc_bs' in self.metrics:
+            self.log_vals['train']['bs_outputs'] = []
+            self.log_vals['train']['bs_targets'] = []
             self.log_vals['val']['bs_outputs'] = []
             self.log_vals['val']['bs_targets'] = []
             self.log_vals['test']['bs_outputs'] = []
@@ -237,7 +242,7 @@ class DrugTargetCoembeddingLightning(pl.LightningModule):
                 z = z + layer(z)
             target_projection = self.target_projector['out'](z)
         else:
-            if self.args.prot_proj == "agg":
+            if self.args.prot_proj in ["agg","hannes"]:
                 target_projection, attn_head = self.target_projector(target)
             else:
                 target_projection = self.target_projector(target)
@@ -307,10 +312,10 @@ class DrugTargetCoembeddingLightning(pl.LightningModule):
             pdg_loss = self.PDG_loss(attn_head)
 
 
-        if train:
-            return loss * self.CEWeight, {'AG':ag_loss, 'PDG':pdg_loss, "InfoNCE": infoloss}
-        else:
-            return loss, {'AG':ag_loss, 'PDG':pdg_loss, "InfoNCE": infoloss}, similarity, attn_head
+        # if train:
+        #     return loss * self.CEWeight, {'AG':ag_loss, 'PDG':pdg_loss, "InfoNCE": infoloss}
+        # else:
+        return loss, {'AG':ag_loss, 'PDG':pdg_loss, "InfoNCE": infoloss}, similarity, attn_head
 
     def training_step(self, batch, batch_idx):
         if self.contrastive and self.current_epoch % 2 == 1:
@@ -326,7 +331,7 @@ class DrugTargetCoembeddingLightning(pl.LightningModule):
             else:
                 opt = self.optimizers()
             opt.zero_grad()
-            loss, oth_losses = self.non_contrastive_step(batch)
+            loss, oth_losses, sim, attn_head = self.non_contrastive_step(batch)
             tot_loss = loss + self.PDG * oth_losses['PDG'] + self.AG * oth_losses['AG'] + self.InfoNCEWeight * oth_losses['InfoNCE']
             self.manual_backward(tot_loss)
             opt.step()
@@ -337,6 +342,13 @@ class DrugTargetCoembeddingLightning(pl.LightningModule):
                 self.log("train/AG_loss", oth_losses['AG'])
             if self.PDG != 0:
                 self.log("train/PDG_loss", oth_losses['PDG'])
+
+
+            self.log_vals['train']['outputs'].extend(sim)
+            self.log_vals['train']['targets'].extend(batch[-1])
+            if self.AG != 0 and self.args.task == "binding_site":
+                self.log_vals['train']['bs_targets'].extend(batch[-2])
+                self.log_vals['train']['bs_outputs'].extend(attn_head[:,0,:])
 
         return loss
 
@@ -354,6 +366,8 @@ class DrugTargetCoembeddingLightning(pl.LightningModule):
         else:
             self.log("train/lr", sch.get_lr()[0], sync_dist=True if self.trainer.num_devices > 1 else False)
             sch.step()
+
+        self.compute_metrics('train')
 
     def validation_step(self, batch, batch_idx):
         if self.global_step == 0 and self.global_rank == 0 and not self.args.no_wandb:
@@ -400,6 +414,8 @@ class DrugTargetCoembeddingLightning(pl.LightningModule):
         for name, metric in self.metrics.items():
             if 'bs' in name:
                 metric(pad_sequence(self.log_vals[stage]['bs_outputs']).to(self.device), pad_sequence(self.log_vals[stage]['bs_targets']).to(torch.int).to(self.device))
+            elif stage == "train":
+                continue
             if self.classify:
                 metric(torch.Tensor(self.log_vals[stage]['outputs']).to(self.device), torch.Tensor(self.log_vals[stage]['targets']).to(torch.int).to(self.device))
             else:
@@ -407,8 +423,9 @@ class DrugTargetCoembeddingLightning(pl.LightningModule):
             self.log(f"{stage}/{name}", metric, on_step=False, on_epoch=True, sync_dist=True if self.trainer.num_devices > 1 else False)
             # print(f"{stage}/{name}:{metric.compute()}")
 
-        self.log_vals[stage]['outputs'].clear()
-        self.log_vals[stage]['targets'].clear()
+        if stage != "train":
+            self.log_vals[stage]['outputs'].clear()
+            self.log_vals[stage]['targets'].clear()
         if isinstance(self.log_vals[stage]['bs_outputs'],list):
             self.log_vals[stage]['bs_outputs'].clear()
             self.log_vals[stage]['bs_targets'].clear()
