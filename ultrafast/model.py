@@ -361,6 +361,7 @@ class DrugTargetCoembeddingLightning(pl.LightningModule):
 
     def forward(self, drug, target):
         model_size = self.args.model_size
+        sigmoid_scalar = self.args.sigmoid_scalar
         if model_size == 'huge' or model_size == 'mega':
             y = self.drug_projector['proj'](drug)
             for layer in self.drug_projector['res']:
@@ -383,7 +384,7 @@ class DrugTargetCoembeddingLightning(pl.LightningModule):
             target_projection = self.target_projector(target)
 
         if self.classify:
-            similarity = 4 * F.cosine_similarity(
+            similarity = sigmoid_scalar * F.cosine_similarity(
                 drug_projection, target_projection
             )
         else:
