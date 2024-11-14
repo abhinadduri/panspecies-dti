@@ -9,9 +9,9 @@ def parse_args():
     parser = argparse.ArgumentParser(description="Combine chunks of similarity data")
     parser.add_argument("input", help="Input directory containing similarity data chunks")
     parser.add_argument("--in-suffix", default=".csv", help="Input file suffix")
-    parser.add_argument("--output-topk",required=True, help="Output file")
-    parser.add_argument("--output-bad", required=True, help="Output file for bad files")
-    parser.add_argument("--K", type=int, default=100, help="Number of top similarities to keep")
+    parser.add_argument("-O","--output-topk",required=True, help="Output file")
+    parser.add_argument("--output-bad", default=None, help="Output file for bad files")
+    parser.add_argument("-K", type=int, default=100, help="Number of top similarities to keep")
     return parser.parse_args()
 
 def main():
@@ -33,8 +33,12 @@ def main():
         topk.push_list(df["CosineSimi"], df["id"], df["SMILES"])
     # if there are bad files write them to the output-bad file
     if bad_files:
-        with open(args.output_bad, "w") as f:
-            f.write("\n".join(bad_files))
+        if args.output_bad is not None:
+            with open(args.output_bad, "w") as f:
+                f.write("\n".join(bad_files))
+        else:
+            print("Bad files:")
+            print("\n\t".join(bad_files))
     # write the topk similarities to the output-topk file
     with open(args.output_topk, "w") as f:
         for similarity, id, smi in topk.get():
