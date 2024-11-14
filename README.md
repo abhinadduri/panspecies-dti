@@ -1,24 +1,29 @@
 # SPRINT
-Structure-aware PRotein ligand INTeraction (SPRINT) is a ultrafast deep learning framework for drug-target interaction prediction.
+**S**tructure-aware **PR**otein ligand **INT**eraction (SPRINT) is a ultrafast deep learning framework for drug-target interaction prediction.
+
 All datasets are located in the `data` folder.
+
+<!-- I cannot get this TOC to work. -->
+<!-- <details open> -->
+<!-- <summary><b>Table of contents</b></summary> -->
+<!--  * [Overview](#overview) -->
+<!--  * [Install](#install) -->
+<!--  * [Train a model](#train-a-model) -->
+<!--  * [Model Checkpoints](#download-pre-trained-model) -->
+<!--  * [MERGED Dataset](#download-MERGED-dataset) -->
+<!--  * [Embed Proteins and Molecules](#embed-proteins-and-molecules) -->
+<!--  * [Vector Database](#vector-database) -->
+<!--    - [Make a vector database of drugs](#make-a-vector-database-of-drugs) -->
+<!--    - [Report top-k accuracy by querying targets against the drug database](#report-top-k-accuracy-by-querying-targets-against-the-drug-database) -->
+<!--  * [Compute TopK Hits](#compute-TopK-Hits-for-a-given-Query) -->
+<!--  * [Generate SaProt sequence](#generate-SaProt-sequence-for-a-given-protein-structure) -->
+<!-- </details> -->
 
 ## Overview
 The protein and ligand are co-embedded in a shared space, enabling interaction prediction at the speed of a single dot product.
 Proteins are embedded with [SaProt](https://github.com/westlake-repl/SaProt), followed by a Attention-Pooling layer, and small MLP. Ligands are embedded using Morgan Fingerprints and a small MLP.
 The model is trained in a fully supervised manner to predict the interaction between proteins and ligands.
 
-<details open><summary><b>Table of contents</b></summary>
-- [Install](#Install)
-- [Train a model](#Train-a-model)
-- [Model Checkpoints](#Download-pre-trained-model)
-- [MERGED Dataset](#Download-MERGED-dataset)
-- [Embed Proteins and Molecules](#Embed-proteins-and-molecules)
-- [Vector Database](#Vector-Database)
-    - [Make a vector database of drugs](#Make-a-vector-database-of-drugs)
-    - [Report top-k accuracy by querying targets against the drug database](#Report-top-k-accuracy-by-querying-targets-against-the-drug-database)
-- [Compute TopK Hits](#Compute-TopK-Hits-for-a-given-Query)
-- [Generate SaProt sequence](#Generate-SaProt-sequence-for-a-given-protein-structure)
-</details>
 
 ## Install
 ```
