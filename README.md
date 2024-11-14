@@ -1,8 +1,26 @@
-# Ultra-High-Throughput Virtual Screening
-
+# SPRINT
+Structure-aware PRotein ligand INTeraction (SPRINT) is a ultrafast deep learning framework for drug-target interaction prediction.
 All datasets are located in the `data` folder.
 
-# Install
+## Overview
+The protein and ligand are co-embedded in a shared space, enabling interaction prediction at the speed of a single dot product.
+Proteins are embedded with [SaProt](https://github.com/westlake-repl/SaProt), followed by a Attention-Pooling layer, and small MLP. Ligands are embedded using Morgan Fingerprints and a small MLP.
+The model is trained in a fully supervised manner to predict the interaction between proteins and ligands.
+
+<details open><summary><b>Table of contents</b></summary>
+- [Install](#Install)
+- [Train a model](#Train-a-model)
+- [Model Checkpoints](#Download-pre-trained-model)
+- [MERGED Dataset](#Download-MERGED-dataset)
+- [Embed Proteins and Molecules](#Embed-proteins-and-molecules)
+- [Vector Database](#Vector-Database)
+    - [Make a vector database of drugs](#Make-a-vector-database-of-drugs)
+    - [Report top-k accuracy by querying targets against the drug database](#Report-top-k-accuracy-by-querying-targets-against-the-drug-database)
+- [Compute TopK Hits](#Compute-TopK-Hits-for-a-given-Query)
+- [Generate SaProt sequence](#Generate-SaProt-sequence-for-a-given-protein-structure)
+</details>
+
+## Install
 ```
 # Install from source
 git clone https://github.com/abhinadduri/panspecies-dti.git
@@ -15,7 +33,7 @@ install git+https://github.com/abhinadduri/panspecies-dti.git
 If you want to use DDP for faster training, first follow the above installation instructions.
 Then manually downgrade lightning to 2.0.8 via `pip install lightning==2.0.8`
 
-# Train a model
+## Train a model
 Reproducing the drug-target interaction model in the MLCB 2024 abstract.
 ```
 # Default config
@@ -28,12 +46,12 @@ The example script above will generate ProtBert and store ProtBert per-residue e
 
 The goal to start attention pooling training is to run the above script on all nested `*.csv` files with protein sequences in the data folder.
 
-# Download pre-trained model
+## Download pre-trained model
 Links to download pre-trained models are in `checkpoints/README.md`.
 
 Once downloaded, just `gunzip` the file to get the ready-to-use model checkpoint.
 
-# Download MERGED dataset
+## Download MERGED dataset
 Script to download splits and data:
 ```
 cd data/MERGED/huge_data/
@@ -41,7 +59,7 @@ bash download.sh
 cd -
 ```
 
-# Embed proteins and molecules
+## Embed proteins and molecules
 ```
 # Get target embeddings with pre-trained model
 ultrafast-embed --data-file data/BIOSNAP/full_data/test.csv  \
@@ -55,8 +73,8 @@ ultrafast-embed --data-file data/BIOSNAP/full_data/test.csv  \
     --moltype drug \ 
     --output_path results/BIOSNAP_test_drug_embeddings.npy
 ```
-
-# Make a vector database of drugs
+## Vector Database
+### Make a vector database of drugs
 ```
 ultrafast-store --data-file data/BIOSNAP/full_data/test.csv  \
     --embeddings results/BIOSNAP_test_drug_embeddings.npy \
@@ -65,7 +83,7 @@ ultrafast-store --data-file data/BIOSNAP/full_data/test.csv  \
     --db_name biosnap_test_drug_embeddings
 ```
 
-# Report top-k accuracy by querying targets against the drug database
+### Report top-k accuracy by querying targets against the drug database
 ```
 ultrafast-report --data-file data/BIOSNAP/full_data/test.csv  \
     --embeddings results/BIOSNAP_test_target_embeddings.npy \
