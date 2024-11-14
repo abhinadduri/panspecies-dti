@@ -108,10 +108,7 @@ def train(
     model_size: str,
     ship_model: str,
     eval_pcba: bool,
-<<<<<<< HEAD
     sigmoid_scalar: int,
-=======
->>>>>>> 0cb6b45 (added pcba evaluations computed after each epoch with optional flag)
 ):
     args = argparse.Namespace(
         experiment_id=experiment_id,
@@ -143,10 +140,7 @@ def train(
         model_size=model_size,
         ship_model=ship_model,
         eval_pcba=eval_pcba,
-<<<<<<< HEAD
         sigmoid_scalar=sigmoid_scalar,
-=======
->>>>>>> 0cb6b45 (added pcba evaluations computed after each epoch with optional flag)
     )
     config = OmegaConf.load(args.config)
     args_overrides = {k: v for k, v in vars(args).items() if v is not None}
