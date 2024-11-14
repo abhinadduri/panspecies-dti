@@ -1,6 +1,5 @@
 #!/usr/bin/env python
 import argparse
-import heapq
 import numpy as np
 import pandas as pd
 import torch
@@ -9,52 +8,38 @@ from tqdm import tqdm
 from torch.nn import CosineSimilarity
 from torch.utils.data import DataLoader
 from ultrafast.datamodules import EmbeddedDataset
+from ultrafast.utils import TopK
 
-# create a class that keeps track of the topk cosine_similarities and their IDs
-class TopK:
-    def __init__(self, topk):
-        self.topk = topk
-        self.data = []
-    def push(self, similarity, id):
-        if len(self.data) < self.topk:
-            heapq.heappush(self.data, (similarity, id))
-        elif similarity > self.data[0][0]:
-            heapq.heappushpop(self.data,(similarity, id))
-    def get(self):
-        return sorted(self.data, reverse=True)
-    # write a method that pushes a list of similarities and IDs
-    def push_list(self, similarities, ids):
-        for similarity, id in zip(similarities, ids):
-            self.push(similarity, id.item())
-
-def argparse_topk():
-    parser = argparse.ArgumentParser(description='Topk similarity search')
-    parser.add_argument('--library_embeddings', type=str, required=True, help='Path to the library embeddings')
-    parser.add_argument('--library_type', default="drug", choices=['drug','target'], help='Type of the library embeddings')
-    parser.add_argument('--library_data', type=str, required=True, help='Path to the library data (csv)')
+def compute_topk_cli():
+    parser = argparse.ArgumentParser(description='Find TopK similarities between library and query embeddings')
+    parser.add_argument('--library-embeddings', type=str, required=True, help='Path to the library embeddings')
+    parser.add_argument('--library-type', default="drug", choices=['drug','target'], help='Type of the library embeddings')
+    parser.add_argument('--library-data', type=str, required=True, help='Path to the library data (csv)')
+    parser.add_argument('--query-embeddings', type=str, required=True, help='Path to the query embeddings')
+    parser.add_argument('--query-data', type=str, required=True, help='Path to the query data (csv)')
+    parser.add_argument('-K', type=int, default=100, help='TopK similarities to return')
     parser.add_argument('--delimiter', type=str, default=',', help='Delimiter for the csv files')
-    parser.add_argument('--query_embeddings', type=str, required=True, help='Path to the query embeddings')
-    parser.add_argument('--query_data', type=str, required=True, help='Path to the query data (csv)')
-    parser.add_argument('--topk', type=int, default=100, help='Topk to consider for similarity')
-    parser.add_argument('--batch_size', type=int, default=2048, help='Batch size for the dataloader')
+    parser.add_argument('--batch-size', type=int, default=2048, help='Batch size for the dataloader')
     parser.add_argument('--verbose','-v',action='store_true',help='Print similarities')
-    return parser.parse_args()
+    args = parser.parse_args()
+    compute_topk(**vars(args))
 
-def topk(args):
-    library_embeddings = EmbeddedDataset(args.library_embeddings)
-    query_embeddings = np.load(args.query_embeddings)
+def compute_topk(library_embeddings, library_data, query_embeddings, query_data, K=100, batch_size=2048, verbose=False, delimiter=',', library_type='drug'):
+    assert library_type in ['drug','target'], "Library type should be either 'drug' or 'target'"
+    library_embeddings = EmbeddedDataset(library_embeddings)
+    query_embeddings = np.load(query_embeddings)
     if len(query_embeddings.shape) == 1:
         query_embeddings = query_embeddings[np.newaxis, :]
-    query_data = pd.read_csv(args.query_data)
-    query_ids = query_data['uniprot_id'].values if args.library_type == 'drug' else query_data['id'].values
+    query_data = pd.read_csv(query_data)
+    query_ids = query_data['uniprot_id'].values if library_type == 'drug' else query_data['id'].values
 
     device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
     query_embeddings = torch.tensor(query_embeddings).to(device)
     cosine_sim = CosineSimilarity(dim=1)
     # create a dataloader for the library embeddings
     # create a TopK object for each query
-    topks = [TopK(args.topk) for _ in range(query_embeddings.shape[0])]
-    dataloader = DataLoader(library_embeddings, batch_size=args.batch_size, shuffle=False)
+    topks = [TopK(K) for _ in range(query_embeddings.shape[0])]
+    dataloader = DataLoader(library_embeddings, batch_size=batch_size, shuffle=False)
     with torch.no_grad():
         for emb_mols, idxs in tqdm(dataloader, desc="Similarity", total=len(dataloader)):
             emb_mols = emb_mols.to(device)
@@ -75,7 +60,7 @@ def topk(args):
             torch.cuda.empty_cache()
 
     # print the topk similarities and IDs
-    lib_df = pd.read_csv(args.library_data, sep=args.delimiter)
+    lib_df = pd.read_csv(library_data, sep=delimiter)
     for i, topk in enumerate(topks):
         rec_id = query_ids[i]
         simi_and_idx = topk.get()
@@ -91,12 +76,7 @@ def topk(args):
         for j, idx in enumerate(idx):
             top_mol_emb[j,:] = library_embeddings[idx][0].numpy()
         np.save(f"topk_mol_embeddings_{rec_id}.npy", top_mol_emb)
-        if args.verbose:
+        if verbose:
             print(f"{rec_id}:{i}")
             for similarity, idx in simi_and_idx:
                 print(f"Similarity: {similarity} ID: {lib_df.iloc[idx]['id']}")
-
-
-if __name__ == '__main__':
-    args = argparse_topk()
-    topk(args)

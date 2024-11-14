@@ -1,3 +1,4 @@
+import heapq
 from ultrafast import featurizers
 from rdkit import Chem
 from torch.nn.init import xavier_normal_
@@ -18,6 +19,24 @@ def canonicalize(smiles):
         return Chem.MolToSmiles(mol, isomericSmiles=True)
     else:
         return None
+
+# create a class that keeps track of the topk cosine_similarities and their IDs
+class TopK:
+    def __init__(self, k):
+        self.K = k
+        self.data = []
+    def push(self, similarity, id):
+        if len(self.data) < self.K:
+            heapq.heappush(self.data, (similarity, id))
+        elif similarity > self.data[0][0]:
+            heapq.heappushpop(self.data,(similarity, id))
+    def get(self):
+        return sorted(self.data, reverse=True)
+    # write a method that pushes a list of similarities and IDs
+    def push_list(self, similarities, ids):
+        for similarity, id in zip(similarities, ids):
+            self.push(similarity, id.item())
+
 
 # The below is copy pasted from github rdkit machine learning library # 
 
