@@ -89,6 +89,7 @@ def train_cli():
     parser.add_argument("--ship-model", help="Train a final to ship model, while excluding the uniprot id's specified by this argument.", dest="ship_model")
     parser.add_argument("--eval-pcba", action="store_true", help="Evaluate PCBA during validation")
     parser.add_argument("--eval-dude", action="store_true", help="Evaluate DUDe during validation")
+    parser.add_argument("--sigmoid-scalar", type=int, default=5, dest="sigmoid_scalar")
 
     args = parser.parse_args()
     train(**vars(args))
@@ -124,6 +125,7 @@ def train(
     ship_model: str,
     eval_pcba: bool,
     eval_dude: bool,
+    sigmoid_scalar: int,
 ):
     args = argparse.Namespace(
         experiment_id=experiment_id,
@@ -156,6 +158,7 @@ def train(
         ship_model=ship_model,
         eval_pcba=eval_pcba,
         eval_dude=eval_dude,
+        sigmoid_scalar=sigmoid_scalar,
     )
     config = OmegaConf.load(args.config)
     args_overrides = {k: v for k, v in vars(args).items() if v is not None}
@@ -285,10 +288,12 @@ def train(
         wandb_logger.watch(model)
         if hasattr(wandb_logger.experiment.config, 'update'):
             wandb_logger.experiment.config.update(OmegaConf.to_container(config, resolve=True, throw_on_missing=True))
+        wandb_logger.experiment.tags = [config.task, config.experiment_id, config.target_featurizer, config.model_size]
 
         wandb_logger.experiment.tags = [config.task, 'arxiv', config.target_featurizer]
 
-    if config.task == 'merged':
+    if config.task == 'merged' and args.ship_model:
+        # save every epoch
         checkpoint_callback = pl.callbacks.ModelCheckpoint(
             save_top_k=-1,
             dirpath=save_dir,
@@ -323,15 +328,20 @@ def train(
     )
 
     if ship_model:
-        # Train on all data
+        # Train on all data and test with best weights
         trainer.fit(model, datamodule=datamodule)
+        trainer.test(datamodule=datamodule, ckpt_path=checkpoint_callback.best_model_path)
         # Save the final model
         trainer.save_checkpoint(f"{save_dir}/ship_model.ckpt")
     else:
         # Regular training with validation
         trainer.fit(model, datamodule=datamodule)
         # Test model using best weights
-        trainer.test(datamodule=datamodule, ckpt_path=checkpoint_callback.best_model_path)
+        if config.epochs == 0:
+            ckpt = config.checkpoint
+        else:
+            ckpt = checkpoint_callback.best_model_path
+        trainer.test(datamodule=datamodule, ckpt_path=ckpt)
 
 
 if __name__ == '__main__':
