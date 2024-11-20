@@ -62,6 +62,7 @@ def train_cli():
     parser.add_argument("--d", "--device", default=0, type=int, help="CUDA device", dest="device")
     parser.add_argument("--verbosity", type=int, help="Level at which to log", dest="verbosity")
     parser.add_argument("--checkpoint", default=None, help="Model weights to start from")
+    parser.add_argument("--AG-checkpoint", default=None, help="Model weights from an AG checkpoint")
     parser.add_argument('--prot-proj', choices=["avg","agg","transformer", "hannes"], help="Change the protein projector method")
     parser.add_argument('--out-type', choices=['cls','mean'], help="use cls token or mean of everything else")
 
@@ -102,6 +103,7 @@ def train(
     device: int,
     verbosity: int,
     checkpoint: str,
+    AG_checkpoint: str,
     prot_proj: str,
     out_type: str,
     num_layers_target: int,
@@ -138,6 +140,7 @@ def train(
         device=device,
         verbosity=verbosity,
         checkpoint=checkpoint,
+        AG_checkpoint=AG_checkpoint,
         prot_proj=prot_proj,
         out_type=out_type,
         num_layers_target=num_layers_target,
@@ -269,6 +272,35 @@ def train(
             device=device,
             args=config
         )
+    elif args.AG_checkpoint:
+        print(f"Loading model from checkpoint: {args.AG_checkpoint}")
+        AG_hparams = torch.load(args.AG_checkpoint)
+        ckpt_args = AG_hparams['hyper_parameters']['args']
+        ckpt_args['task'] = config.task
+        ckpt_args['contrastive'] = config.contrastive
+        ckpt_args['AG'] = config.AG
+        ckpt_args['PDG'] = config.PDG
+        ckpt_args['CEWeight'] = config.CEWeight
+        ckpt_args['lr'] = config.lr
+        ckpt_args['lr_t0']= config.lr_t0
+        ckpt_args['batch_size'] = config.batch_size
+        ckpt_args['InfoNCEWeight'] = config.InfoNCEWeight
+        AG_hparams['hyper_parameters']['args'] = ckpt_args
+        torch.save(AG_hparams,f'{args.AG_checkpoint.split(".")[0]}_fixed.ckpt')
+        model = DrugTargetCoembeddingLightning.load_from_checkpoint(
+            f'{args.AG_checkpoint.split(".")[0]}_fixed.ckpt',
+            drug_dim=drug_featurizer.shape,
+            target_dim=target_featurizer.shape,
+            latent_dim=config.latent_dimension,
+            classify=config.classify,
+            contrastive=config.contrastive,
+            InfoNCEWeight=config.InfoNCEWeight,
+            num_layers_target=config.num_layers_target,
+            dropout=config.dropout,
+            device=device,
+            args=config
+        )
+
     else:
         print("Initializing new model")
         model = DrugTargetCoembeddingLightning(
