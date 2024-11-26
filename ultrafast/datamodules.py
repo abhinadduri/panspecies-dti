@@ -19,6 +19,7 @@ from torch.utils.data import Dataset, DataLoader
 from torch.nn.utils.rnn import pad_sequence
 from typing import Optional
 from ultrafast.featurizers import Featurizer
+from ultrafast.tdc_utils import compute_ESM_features, get_saprot_seq
 
 def get_task_dir(task_name: str):
     """
@@ -533,6 +534,28 @@ class TDCDataModule(pl.LightningDataModule):
                 )
 
         all_drugs = pd.concat([train_val, test])[self._drug_column].unique()
+        if self.target_featurizer.name == "SaProtFeaturizer" and not train_val.contains("Target Structure"):
+            target_ids = pd.concat([train_val, test])["Target ID"].unique()
+            # get the sequence for each target_id in target_ids, using the Target column
+            target_struc_dict = self.compute_structure_features(target_ids)
+            
+            not_found = []
+            for target_id in target_ids:
+                if target_struc_dict[target_id] is None:
+                    not_found.append(target_id)
+            if len(not_found) > 0:
+                print(f"Could not find sequences for {len(not_found)} targets")
+                # get the sequence for each target_id in not_found, using the Target column
+                not_found = pd.concat([train_val, test]).loc[pd.concat([train_val, test])["Target ID"].isin(not_found)]
+                # create a dictionary with the target_id as key and the sequence as value
+                not_found_dict = dict(zip(not_found["Target ID"], not_found["Target"]))
+
+                esm_struct_dict = compute_ESM_features(not_found_dict)
+                # update the target_struc_dict with the sequences from esm_struct_dict
+                target_struc_dict.update(esm_struct_dict)
+            # add the sequences to the train_val and test dataframes
+            train_val["Target Structure"] = train_val["Target ID"].map(target_struc_dict)
+            test["Target Structure"] = test["Target ID"].map(target_struc_dict)
         all_targets = pd.concat([train_val, test])[self._target_column].unique()
 
         if self.drug_featurizer.path.exists() and self.target_featurizer.path.exists():
@@ -603,6 +626,18 @@ class TDCDataModule(pl.LightningDataModule):
                 self.drug_featurizer,
                 self.target_featurizer,
             )
+
+    def compute_structure_features(self, target_ids):
+        """
+        Compute structure features for the target proteins
+        """
+        with Pool(self.num_workers) as p:
+            results = p.map(get_saprot_seq, target_ids)
+        ids, seqs = zip(*results)
+        structure_seqs = dict(zip(ids, seqs))
+            
+        return structure_seqs
+
 
     def train_dataloader(self):
         return DataLoader(self.data_train, **self._loader_kwargs)
