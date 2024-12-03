@@ -1,5 +1,8 @@
 import heapq
+import time
 import os
+import re
+import numpy as np
 from ultrafast import featurizers
 from rdkit import Chem
 from torch.nn.init import xavier_normal_
@@ -38,6 +41,41 @@ class TopK:
         for similarity, id in zip(similarities, ids):
             self.push(similarity, id.item())
 
+def extract_plddt(pdb_path: str) -> np.ndarray:
+    """
+    Extract plddt scores from pdb file.
+    Args:
+        pdb_path: Path to pdb file.
+
+    Returns:
+        plddts: plddt scores.
+    """
+    with open(pdb_path, "r") as r:
+        plddt_dict = {}
+        for line in r:
+            line = re.sub(' +', ' ', line).strip()
+            splits = line.split(" ")
+            
+            if splits[0] == "ATOM":
+                # If position < 1000
+                if len(splits[4]) == 1:
+                    pos = int(splits[5])
+                
+                # If position >= 1000, the blank will be removed, e.g. "A 999" -> "A1000"
+                # So the length of splits[4] is not 1
+                else:
+                    pos = int(splits[4][1:])
+                
+                plddt = float(splits[-2])
+                
+                if pos not in plddt_dict:
+                    plddt_dict[pos] = [plddt]
+                else:
+                    plddt_dict[pos].append(plddt)
+    
+    plddts = np.array([np.mean(v) for v in plddt_dict.values()])
+    return plddts
+
 def get_struc_seq(foldseek,
                   path,
                   chains: list = None,
@@ -66,7 +104,7 @@ def get_struc_seq(foldseek,
         seq_dict: A dict of structural seqs. The keys are chain IDs. The values are tuples of
         (seq, struc_seq, combined_seq).
     """
-    assert os.path.exists(foldseek), f"Foldseek not found: {foldseek}"
+    # assert os.path.exists(foldseek), f"Foldseek not found: {foldseek}"
     assert os.path.exists(path), f"PDB file not found: {path}"
     # check if the pdb file is empty
     assert os.path.getsize(path) > 0, f"PDB file is empty: {path}"

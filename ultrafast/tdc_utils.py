@@ -1,6 +1,7 @@
 import requests
 import os
 from multiprocessing import current_process
+import torch
 from transformers import AutoTokenizer, EsmForProteinFolding
 from transformers.models.esm.openfold_utils.protein import to_pdb, Protein as OFProtein
 from transformers.models.esm.openfold_utils.feats import atom14_to_atom37
@@ -27,12 +28,12 @@ def compute_ESM_features(target_id_dict):
     tokenizer = AutoTokenizer.from_pretrained("facebook/esmfold_v1")
     model = EsmForProteinFolding.from_pretrained("facebook/esmfold_v1", low_cpu_mem_usage=True)
     model.esm = model.esm.half()
-    model = model.to("cuda:0")
-    model.trunk.set_chunk_size(64)
+    model = model.to("cuda")
+    # model.trunk.set_chunk_size(64)
     esm_struct_dict = {}
     for target_id, sequence in target_id_dict.items():
         tokenized_sequence = tokenizer(sequence, return_tensors="pt", add_special_tokens=False)["input_ids"]
-        tokenized_sequence = tokenized_sequence.to("cuda:0")
+        tokenized_sequence = tokenized_sequence.to("cuda")
         with torch.no_grad():
             output = model(tokenized_sequence)
         pdb = convert_outputs_to_pdb(output)

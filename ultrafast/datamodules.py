@@ -11,6 +11,7 @@ import pyxis as px
 import typing as T
 
 
+from multiprocessing import Pool
 from numpy.random import choice
 from pathlib import Path
 from sklearn.model_selection import KFold, train_test_split
@@ -522,6 +523,9 @@ class TDCDataModule(pl.LightningDataModule):
 
         self.drug_featurizer = drug_featurizer
         self.target_featurizer = target_featurizer
+        if self.target_featurizer.name == "SaProt":
+            self._target_column = "Target Structure"
+            self.target_struc_dict = None
 
         self.dg_group = dti_dg_group(path=self._data_dir)
         self.dg_benchmark = self.dg_group.get("bindingdb_patent")
@@ -534,28 +538,32 @@ class TDCDataModule(pl.LightningDataModule):
                 )
 
         all_drugs = pd.concat([train_val, test])[self._drug_column].unique()
-        if self.target_featurizer.name == "SaProtFeaturizer" and not train_val.contains("Target Structure"):
-            target_ids = pd.concat([train_val, test])["Target ID"].unique()
+        if self._target_column == "Target Structure":
+            target_ids = pd.concat([train_val, test])["Target_ID"].unique()
             # get the sequence for each target_id in target_ids, using the Target column
-            target_struc_dict = self.compute_structure_features(target_ids)
+            print("Computing SaProt sequences for TDC data with AFDB structures")
+            self.target_struc_dict = self.compute_structure_features(target_ids)
             
             not_found = []
             for target_id in target_ids:
-                if target_struc_dict[target_id] is None:
+                if self.target_struc_dict[target_id] is None:
                     not_found.append(target_id)
             if len(not_found) > 0:
                 print(f"Could not find sequences for {len(not_found)} targets")
                 # get the sequence for each target_id in not_found, using the Target column
-                not_found = pd.concat([train_val, test]).loc[pd.concat([train_val, test])["Target ID"].isin(not_found)]
+                not_found = pd.concat([train_val, test]).loc[pd.concat([train_val, test])["Target_ID"].isin(not_found)]
                 # create a dictionary with the target_id as key and the sequence as value
-                not_found_dict = dict(zip(not_found["Target ID"], not_found["Target"]))
+                not_found_dict = dict(zip(not_found["Target_ID"], not_found["Target"]))
 
-                esm_struct_dict = compute_ESM_features(not_found_dict)
-                # update the target_struc_dict with the sequences from esm_struct_dict
-                target_struc_dict.update(esm_struct_dict)
+                for tid in not_found_dict.keys():
+                    not_found_dict[tid] = '#'.join(list(not_found_dict[tid])) # just mask the structure tokens
+                print(f"Masking the structure tokens for the {len(not_found)} targets")
+                # esm_struct_dict = compute_ESM_features(not_found_dict)
+                # # update the target_struc_dict with the sequences from esm_struct_dict
+                self.target_struc_dict.update(not_found_dict)
             # add the sequences to the train_val and test dataframes
-            train_val["Target Structure"] = train_val["Target ID"].map(target_struc_dict)
-            test["Target Structure"] = test["Target ID"].map(target_struc_dict)
+            train_val[self._target_column] = train_val["Target_ID"].map(self.target_struc_dict)
+            test[self._target_column] = test["Target_ID"].map(self.target_struc_dict)
         all_targets = pd.concat([train_val, test])[self._target_column].unique()
 
         if self.drug_featurizer.path.exists() and self.target_featurizer.path.exists():
@@ -585,6 +593,11 @@ class TDCDataModule(pl.LightningDataModule):
                 seed=self._seed
                 )
         self.df_test = self.dg_benchmark["test"]
+        if self._target_column == "Target Structure":
+            assert self.target_struc_dict is not None
+            self.df_train[self._target_column] = self.df_train["Target_ID"].map(self.target_struc_dict)
+            self.df_val[self._target_column] = self.df_val["Target_ID"].map(self.target_struc_dict)
+            self.df_test[self._target_column] = self.df_test["Target_ID"].map(self.target_struc_dict)
 
         self._dataframes = [self.df_train, self.df_val, self.df_test]
 
@@ -631,7 +644,7 @@ class TDCDataModule(pl.LightningDataModule):
         """
         Compute structure features for the target proteins
         """
-        with Pool(self.num_workers) as p:
+        with Pool(self._loader_kwargs['num_workers']) as p:
             results = p.map(get_saprot_seq, target_ids)
         ids, seqs = zip(*results)
         structure_seqs = dict(zip(ids, seqs))
