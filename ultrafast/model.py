@@ -334,7 +334,8 @@ class DrugTargetCoembeddingLightning(pl.LightningModule):
         else:
             self.val_mse = torchmetrics.MeanSquaredError()
             self.val_pcc = torchmetrics.PearsonCorrCoef()
-            self.metrics = {"mse": self.val_mse, "pcc": self.val_pcc}
+            self.val_krc = torchmetrics.KendallRankCorrCoef()
+            self.metrics = {"mse": self.val_mse, "pcc": self.val_pcc, "kendalls_tau": self.val_krc}
             self.loss_fct = torch.nn.MSELoss()
 
         if self.contrastive:

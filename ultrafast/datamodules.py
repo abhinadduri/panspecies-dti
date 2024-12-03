@@ -540,9 +540,12 @@ class TDCDataModule(pl.LightningDataModule):
         all_drugs = pd.concat([train_val, test])[self._drug_column].unique()
         if self._target_column == "Target Structure":
             target_ids = pd.concat([train_val, test])["Target_ID"].unique()
-            # get the sequence for each target_id in target_ids, using the Target column
-            print("Computing SaProt sequences for TDC data with AFDB structures")
-            self.target_struc_dict = self.compute_structure_features(target_ids)
+            if (self._data_dir / Path("target_struc_dict.npy")).exists():
+                self.target_struc_dict = np.load(self._data_dir / Path("target_struc_dict.npy"), allow_pickle=True).item()
+            else:
+                # get the sequence for each target_id in target_ids, using the Target column
+                print("Computing SaProt sequences for TDC data with AFDB structures")
+                self.target_struc_dict = self.compute_structure_features(target_ids)
             
             not_found = []
             for target_id in target_ids:
@@ -557,13 +560,14 @@ class TDCDataModule(pl.LightningDataModule):
 
                 for tid in not_found_dict.keys():
                     not_found_dict[tid] = '#'.join(list(not_found_dict[tid])) # just mask the structure tokens
-                print(f"Masking the structure tokens for the {len(not_found)} targets")
+                print(f"Masking the structure tokens for the {len(not_found)} examples")
                 # esm_struct_dict = compute_ESM_features(not_found_dict)
                 # # update the target_struc_dict with the sequences from esm_struct_dict
                 self.target_struc_dict.update(not_found_dict)
             # add the sequences to the train_val and test dataframes
             train_val[self._target_column] = train_val["Target_ID"].map(self.target_struc_dict)
             test[self._target_column] = test["Target_ID"].map(self.target_struc_dict)
+            np.save(self._data_dir / Path("target_struc_dict.npy"), self.target_struc_dict)
         all_targets = pd.concat([train_val, test])[self._target_column].unique()
 
         if self.drug_featurizer.path.exists() and self.target_featurizer.path.exists():
