@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import torch
 import os
+import hashlib
 
 import numpy as np
 import pandas as pd
@@ -264,7 +265,7 @@ class EmbedDataset(Dataset):
 
         return mol
 
-    def teardown(self):
+    def teardown(self, stage):
         if self.db is not None:
             self.db.close()
 
@@ -318,6 +319,8 @@ class DTIDataModule(pl.LightningDataModule):
 
         self.drug_featurizer = drug_featurizer
         self.target_featurizer = target_featurizer
+
+        self.drug_db, self.target_db = None, None
 
     def prepare_data(self):
         """
@@ -407,6 +410,10 @@ class DTIDataModule(pl.LightningDataModule):
 
     def test_dataloader(self):
         return DataLoader(self.data_test, **self._loader_kwargs)
+
+    def teardown(self, stage:str):
+        self.drug_featurizer.teardown(stage)
+        self.target_featurizer.teardown(stage)
 
 class DTIStructDataModule(DTIDataModule):
     """ DataModule used for training on drug-target interaction data.
