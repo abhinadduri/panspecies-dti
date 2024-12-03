@@ -119,10 +119,10 @@ def main():
     parser.add_argument('--no-plddt-mask', action="store_false", help="do not use plddt mask for foldseek, use this flag if the pdb file does not have plddt scores")
     args = parser.parse_args()
 
-    assert os.path.exists(args.input_pdb), f"PDB file not found: {args.input_pdb}"
+    assert os.path.exists(args.input_file), f"PDB file not found: {args.input_file}"
     # check if foldseek is in the path
     assert os.system("which foldseek") == 0, "Foldseek not found in the path, please install foldseek (https://github.com/steineggerlab/foldseek) and add it to the path"
-    seq_dict = get_struc_seq(foldseek="foldseek", path=args.input_pdb, chains=[args.chain], plddt_mask=args.no_plddt_mask)
+    seq_dict = get_struc_seq(foldseek="foldseek", path=args.input_file, chains=[args.chain], plddt_mask=args.no_plddt_mask)
     seq, struc_seq, combined_seq = seq_dict[args.chain]
 
     # open the output file and append a new row with the combined_sequence to the "Target Sequence" column and the pdb file name to the "uniprot_id" column
@@ -130,7 +130,7 @@ def main():
         df = pd.read_csv(args.output_csv)
     else:
         df = pd.DataFrame(columns=["uniprot_id", "Target Sequence"])
-    df = df.append({"uniprot_id": os.path.basename(args.input_pdb), "Target Sequence": combined_seq}, ignore_index=True)
+    df = pd.concat([df,pd.DataFrame.from_dict({"uniprot_id": [os.path.basename(args.input_file)], "Target Sequence": [combined_seq]})], ignore_index=True)
     df.to_csv(args.output_csv)
 
 if __name__ == "__main__":
