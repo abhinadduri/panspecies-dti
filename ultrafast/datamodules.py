@@ -233,6 +233,29 @@ class EmbedInMemoryDataset(Dataset):
 
         return item
 
+class EmbeddedDataset(Dataset):
+    def __init__(self,
+                 emb_file: str,
+                 ):
+        self.db, self.data = None, None
+        if emb_file.endswith(".npy"):
+            self.data = np.load(emb_file, mmap_mode="r")
+        elif emb_file.endswith(".lmdb"):
+            self.db = px.Reader(dirpath=str(emb_file), lock=False) # we only read
+
+    def __len__(self):
+        return len(self.data) if self.data is not None else len(self.db)
+
+    def __getitem__(self, i):
+        if self.data is not None:
+            return torch.tensor(self.data[i]), i
+        else:
+            return torch.tensor(self.db[str(i)]['feats']), i
+
+    def teardown(self):
+        if self.db is not None:
+            self.db.close()
+
 class EmbedDataset(Dataset):
     def __init__(
         self,

@@ -33,6 +33,7 @@ ultrafast-train = "ultrafast.train:train_cli"
 ultrafast-embed = "ultrafast.embed:embed_cli"
 ultrafast-store = "ultrafast.store:store_cli"
 ultrafast-report = "ultrafast.report:report_cli"
+ultrafast-topk = "ultrafast.compute_topk:compute_topk_cli"
 
 [tool.setuptools ]
 packages= ["ultrafast"] 

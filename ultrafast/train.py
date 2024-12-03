@@ -292,6 +292,10 @@ def train(
     if args.eval_pcba:
         callbacks.append(PCBAEvaluationCallback())
 
+    callbacks = [checkpoint_callback]
+    if args.eval_pcba:
+        callbacks.append(PCBAEvaluationCallback())
+
     # Train model
     trainer = pl.Trainer(
         accelerator="auto",

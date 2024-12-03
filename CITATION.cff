@@ -1,0 +1,56 @@
+cff-version: 1.2.0
+title: 'SPRINT'
+message: 'If you find SPRINT useful, please cite our paper'
+authors:
+  - given-names: Andrew T.
+    family-names: McNutt
+    affiliation: University of Pittsburgh
+  - given-names: Abhinav K.
+    family-names: Adduri
+    affiliation: CMU, Arc Institute
+  - given-names: Caleb N.
+    family-names: Ellington
+    affiliation: Carnegie Mellon University
+  - given-names: Monica T.
+    family-names: Dayao
+    affiliation: Carnegie Mellon University
+  - given-names: Eric P.
+    family-names: Xing
+    affiliation: CMU, MBZUAI, Petuum Inc.
+  - given-names: Hosein
+    family-names: Mohimani
+    affiliation: Carnegie Mellon University
+  - given-names: David R.
+    family-names: Koes
+    affiliation: University of Pittsburgh
+url: "https://github.com/abhinadduri/panspecies-dti"
+preferred-citation:
+  type: article
+  title: 'SPRINT Enables Interpretable and Ultra-Fast Virtual Screening against Thousands of Proteomes'
+  authors:
+    - given-names: Andrew T.
+      family-names: McNutt
+      affiliation: University of Pittsburgh
+    - given-names: Abhinav K.
+      family-names: Adduri
+      affiliation: CMU, Arc Institute
+    - given-names: Caleb N.
+      family-names: Ellington
+      affiliation: Carnegie Mellon University
+    - given-names: Monica T.
+      family-names: Dayao
+      affiliation: Carnegie Mellon University
+    - given-names: Eric P.
+      family-names: Xing
+      affiliation: CMU, MBZUAI, Petuum Inc.
+    - given-names: Hosein
+      family-names: Mohimani
+      affiliation: Carnegie Mellon University
+    - given-names: David R.
+      family-names: Koes
+      affiliation: University of Pittsburgh
+  journal: ArXiv
+  year: 2024
+  month: 12
+  doi: 10.48550/arXiv.2411.15418
+
