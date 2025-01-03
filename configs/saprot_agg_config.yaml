@@ -1,23 +1,24 @@
-task: unittest
+task: davis
 contrastive: False
 InfoNCEWeight: 0.0
 
 drug_featurizer: MorganFeaturizer
-target_featurizer: ProtBertFeaturizer
+target_featurizer: SaProtFeaturizer
 latent_dimension: 1024
 model_size: "small"
 prot_proj: "agg"
 loss_type: "CE"
-dropout: 0
+num_heads_agg: 4
+dropout: 0.05
 sigmoid_scalar: 5
 
-batch_size: 32
+batch_size: 64
 shuffle: True
 num_workers: 0
 
-epochs: 50
+epochs: 250
 every_n_val: 1
-lr: 1e-4
+lr: 1e-5
 lr_t0: 10
 weight_decay: 0
 

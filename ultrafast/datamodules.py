@@ -349,6 +349,10 @@ class DTIDataModule(pl.LightningDataModule):
         self.target_featurizer.ext = ".lmdb"
         self.drug_featurizer._save_path = self.drug_featurizer.path.with_suffix(self.drug_featurizer.ext)
         self.target_featurizer._save_path = self.target_featurizer.path.with_suffix(self.target_featurizer.ext)
+        if self.target_featurizer.name == "SaProt":
+            self._train_path = Path("train_foldseek.csv")
+            self._val_path = Path("val_foldseek.csv")
+            self._test_path = Path("test_foldseek.csv")
 
         self.drug_db, self.target_db = None, None
 
@@ -445,44 +449,6 @@ class DTIDataModule(pl.LightningDataModule):
         self.drug_featurizer.teardown(stage)
         self.target_featurizer.teardown(stage)
 
-class DTIStructDataModule(DTIDataModule):
-    """ DataModule used for training on drug-target interaction data.
-    Uses the following data sets:
-    - biosnap
-    - biosnap_prot
-    - biosnap_mol
-    - bindingdb
-    - davis
-    """
-    def __init__(
-            self,
-            data_dir: str,
-            drug_featurizer: Featurizer,
-            target_featurizer: Featurizer,
-            device: torch.device = torch.device("cpu"),
-            batch_size: int = 32,
-            shuffle: bool = True,
-            num_workers: int = 0,
-            header=0,
-            index_col=0,
-            sep=",",
-        ):
-        super().__init__(
-            data_dir,
-            drug_featurizer,
-            target_featurizer,
-            device,
-            batch_size,
-            shuffle,
-            num_workers,
-            header,
-            index_col,
-            sep,
-        )
-        self._data_dir = Path(data_dir)
-        self._train_path = Path("train_foldseek.csv")
-        self._val_path = Path("val_foldseek.csv")
-        self._test_path = Path("test_foldseek.csv")
 
 class TDCDataModule(pl.LightningDataModule):
     """ DataModule used for training on drug-target interaction data.
