@@ -242,7 +242,7 @@ def train(
                 classify=config.classify,
                 contrastive=config.contrastive,
                 InfoNCEWeight=config.InfoNCEWeight,
-                num_layers_target=config.num_layers_target,
+                prot_proj=config.prot_proj,
                 dropout=config.dropout,
                 device=device,
                 args=config
@@ -256,7 +256,7 @@ def train(
                 classify=config.classify,
                 contrastive=config.contrastive,
                 InfoNCEWeight=config.InfoNCEWeight,
-                num_layers_target=config.num_layers_target,
+                prot_proj=config.prot_proj,
                 dropout=config.dropout,
                 args=config
             )
