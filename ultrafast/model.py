@@ -75,7 +75,7 @@ class DrugTargetCoembeddingLightning(pl.LightningModule):
         if prot_proj == "avg":
             protein_projector=nn.Sequential(AverageNonZeroVectors(), nn.Linear(self.target_dim, self.latent_dim))
         elif prot_proj == "transformer":
-            protein_projector = TargetEmbedding( self.target_dim, self.latent_dim, num_layers_target, dropout=dropout, out_type=args.out_type)
+            protein_projector = TargetEmbedding( self.target_dim, self.latent_dim, self.args.num_layers_target, dropout=dropout, out_type=args.out_type)
         elif prot_proj == "agg":
             protein_projector = nn.Sequential(Learned_Aggregation_Layer(self.target_dim, num_heads=self.args.num_heads_agg, attn_drop=dropout, proj_drop=dropout), nn.Linear(self.target_dim, self.latent_dim))
 
