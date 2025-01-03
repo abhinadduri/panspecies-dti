@@ -17,7 +17,7 @@ dependencies = [
     "wandb==0.17.8",
     "omegaconf==2.3.0",
     "scikit_learn==1.2.2",
-    "PyTDC==1.0.6",
+    "PyTDC==1.1.1",
     "rdkit==2023.9.5",
     "datamol==0.12.5",
     "fair-esm==2.0.0",

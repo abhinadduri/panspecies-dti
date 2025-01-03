@@ -26,6 +26,7 @@ from ultrafast.datamodules import (
     MergedDataModule
 )
 from ultrafast.model import DrugTargetCoembeddingLightning
+from ultrafast.drug_only_model import DrugOnlyLightning
 from ultrafast.utils import get_featurizer, xavier_normal
 
 class PCBAEvaluationCallback(Callback):
@@ -49,9 +50,11 @@ def train_cli():
     )
     parser.add_argument("--drug-featurizer", help="Drug featurizer", dest="drug_featurizer")
     parser.add_argument("--target-featurizer", help="Target featurizer", dest="target_featurizer")
+    parser.add_argument('--ligand-only', action="store_true", help="Only use ligand features")
     parser.add_argument("--distance-metric", help="Distance in embedding space to supervise with", dest="distance_metric")
     parser.add_argument("--epochs", type=int, help="number of total epochs to run")
     parser.add_argument("--lr", "--learning-rate", type=float, help="initial learning rate", dest="lr",)
+    parser.add_argument("--weight-decay", type=float, default=0.0, help="weight decay for optimizer")
     parser.add_argument("--clr", type=float, help="contrastive initial learning rate", dest="clr")
     parser.add_argument("--CEWeight", "-C", default=1.0, type=float, help="Cross Entropy loss weight", dest="CEWeight")
     parser.add_argument("--InfoNCEWeight","-I", default=0.0, type=float, help="InfoNCE loss weight", dest="InfoNCEWeight")
@@ -85,9 +88,11 @@ def train(
     task: str,
     drug_featurizer: str,
     target_featurizer: str,
+    ligand_only: bool,
     distance_metric: str,
     epochs: int,
     lr: float,
+    weight_decay: float,
     clr: float,
     CEWeight: float,
     InfoNCEWeight: float,
@@ -117,9 +122,11 @@ def train(
         task=task,
         drug_featurizer=drug_featurizer,
         target_featurizer=target_featurizer,
+        ligand_only=ligand_only,
         distance_metric=distance_metric,
         epochs=epochs,
         lr=lr,
+        weight_decay=weight_decay,
         clr=clr,
         CEWeight=CEWeight,
         InfoNCEWeight=InfoNCEWeight,
@@ -171,7 +178,7 @@ def train(
     # Set up task dm arguments
     if config.task == 'dti_dg':
         config.classify = False
-        config.watch_metric = "val/pcc"
+        config.watch_metric = "val/mse"
         task_dm_kwargs = {
                 "data_dir": task_dir,
                 "drug_featurizer": drug_featurizer,
@@ -236,37 +243,64 @@ def train(
     datamodule.setup()
 
     # Load model
-    if args.checkpoint:
-        print(f"Loading model from checkpoint: {args.checkpoint}")
-        model = DrugTargetCoembeddingLightning.load_from_checkpoint(
-            args.checkpoint,
-            drug_dim=drug_featurizer.shape,
-            target_dim=target_featurizer.shape,
-            latent_dim=config.latent_dimension,
-            classify=config.classify,
-            contrastive=config.contrastive,
-            InfoNCEWeight=config.InfoNCEWeight,
-            num_layers_target=config.num_layers_target,
-            dropout=config.dropout,
-            device=device,
-            args=config
-        )
+    if not args.ligand_only:
+        if args.checkpoint:
+            print(f"Loading model from checkpoint: {args.checkpoint}")
+            model = DrugTargetCoembeddingLightning.load_from_checkpoint(
+                args.checkpoint,
+                drug_dim=drug_featurizer.shape,
+                target_dim=target_featurizer.shape,
+                latent_dim=config.latent_dimension,
+                classify=config.classify,
+                contrastive=config.contrastive,
+                InfoNCEWeight=config.InfoNCEWeight,
+                num_layers_target=config.num_layers_target,
+                dropout=config.dropout,
+                device=device,
+                args=config
+            )
+        else:
+            print("Initializing new model")
+            model = DrugTargetCoembeddingLightning(
+                drug_dim=drug_featurizer.shape,
+                target_dim=target_featurizer.shape,
+                latent_dim=config.latent_dimension,
+                classify=config.classify,
+                contrastive=config.contrastive,
+                InfoNCEWeight=config.InfoNCEWeight,
+                num_layers_target=config.num_layers_target,
+                dropout=config.dropout,
+                args=config
+            )
     else:
-        print("Initializing new model")
-        model = DrugTargetCoembeddingLightning(
-            drug_dim=drug_featurizer.shape,
-            target_dim=target_featurizer.shape,
-            latent_dim=config.latent_dimension,
-            classify=config.classify,
-            contrastive=config.contrastive,
-            InfoNCEWeight=config.InfoNCEWeight,
-            num_layers_target=config.num_layers_target,
-            dropout=config.dropout,
-            args=config
-        )
+        print(f"Loading model from checkpoint: {args.checkpoint}")
+        if args.checkpoint:
+            model = DrugOnlyLightning.load_from_checkpoint(
+                args.checkpoint,
+                drug_dim=drug_featurizer.shape,
+                latent_dim=config.latent_dimension,
+                classify=config.classify,
+                contrastive=config.contrastive,
+                InfoNCEWeight=config.InfoNCEWeight,
+                num_layers_target=config.num_layers_target,
+                dropout=config.dropout,
+                device=device,
+                args=config
+            )
+        else:
+            print("Initializing new model")
+            model = DrugOnlyLightning(
+                drug_dim=drug_featurizer.shape,
+                latent_dim=config.latent_dimension,
+                classify=config.classify,
+                contrastive=config.contrastive,
+                InfoNCEWeight=config.InfoNCEWeight,
+                dropout=config.dropout,
+                args=config
+            )
 
     if not config.no_wandb:
-        wandb_logger = WandbLogger(project=config.wandb_proj, log_model=True)
+        wandb_logger = WandbLogger(project=config.wandb_proj, log_model='all')
         wandb_logger.watch(model)
         if hasattr(wandb_logger.experiment.config, 'update'):
             wandb_logger.experiment.config.update(OmegaConf.to_container(config, resolve=True, throw_on_missing=True))
@@ -282,7 +316,7 @@ def train(
     else:
         checkpoint_callback = pl.callbacks.ModelCheckpoint(
             monitor=config.watch_metric,
-            mode="max",
+            mode="max" if "mse" not in config.watch_metric else "min",
             filename=config.task,
             dirpath=save_dir,
             verbose=True
