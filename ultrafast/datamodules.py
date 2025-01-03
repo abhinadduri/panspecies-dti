@@ -345,6 +345,11 @@ class DTIDataModule(pl.LightningDataModule):
         self.drug_featurizer = drug_featurizer
         self.target_featurizer = target_featurizer
 
+        self.drug_featurizer.ext = ".lmdb"
+        self.target_featurizer.ext = ".lmdb"
+        self.drug_featurizer._save_path = self.drug_featurizer.path.with_suffix(self.drug_featurizer.ext)
+        self.target_featurizer._save_path = self.target_featurizer.path.with_suffix(self.target_featurizer.ext)
+
         self.drug_db, self.target_db = None, None
 
     def prepare_data(self):
@@ -526,6 +531,11 @@ class TDCDataModule(pl.LightningDataModule):
         if self.target_featurizer.name == "SaProt":
             self._target_column = "Target Structure"
             self.target_struc_dict = None
+
+        self.drug_featurizer.ext = ".lmdb"
+        self.target_featurizer.ext = ".lmdb"
+        self.drug_featurizer._save_path = self.drug_featurizer.path.with_suffix(self.drug_featurizer.ext)
+        self.target_featurizer._save_path = self.target_featurizer.path.with_suffix(self.target_featurizer.ext)
 
         self.dg_group = dti_dg_group(path=self._data_dir)
         self.dg_benchmark = self.dg_group.get("bindingdb_patent")
