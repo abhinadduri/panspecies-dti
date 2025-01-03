@@ -3,6 +3,7 @@ import wandb
 from torch import nn
 import torch.nn.functional as F
 from ultrafast.contrastive_loss import MarginScheduledLossFunction, InfoNCELoss
+from ultrafast.modules import AverageNonZeroVectors, Learned_Aggregation_Layer, TargetEmbedding, LargeDrugProjector, LargeProteinProjector
 
 import pytorch_lightning as pl
 import torchmetrics
@@ -38,154 +39,6 @@ class FocalLoss(nn.Module):
             loss = loss.sum()
 
         return loss
-
-class FeedForward(nn.Module):
-    def __init__(self, dim, hidden_dim, dropout = 0.):
-        super().__init__()
-        self.net = nn.Sequential(
-            nn.LayerNorm(dim),
-            nn.Linear(dim, hidden_dim),
-            nn.GELU(),
-            nn.Dropout(dropout),
-            nn.Linear(hidden_dim, dim),
-            nn.Dropout(dropout)
-        )
-
-    def forward(self, x):
-        return self.net(x)
-
-class Attention(nn.Module):
-    """
-    A single layer of multi-head self-attention.
-    """
-    def __init__(self, embed_dim, num_heads, head_dim, dropout=0.0, **kwargs):
-        super().__init__()
-        self.heads = num_heads
-        self.inner_dim = num_heads * head_dim
-        self.to_qkv = nn.Linear(embed_dim, self.inner_dim * 3, bias=False)
-        self.multihead_attn = nn.MultiheadAttention(self.inner_dim, num_heads, dropout=dropout, batch_first=True, **kwargs)
-
-    def forward(self, x):
-        q, k, v = self.to_qkv(x).chunk(3, dim=-1)
-        return self.multihead_attn(q, k , v)[0]
-
-class Transformer(nn.Module):
-    """
-    Layers of self-attention after appending a CLS token to the input.
-
-    The input to this module is expected to be the frozen embeddings of a protein foundation model,
-    such as ProtBert or ESM. 
-
-    `dim` is the dimension of the embeddings.
-    `depth` is the number of transformer layers.
-    `num_heads` is the number of heads in the multi-head attention.
-    `head_dim` is the dimension of the heads.
-    `mlp_dim` is the hidden dimension of the feed forward network. 
-    """
-    def __init__(self, dim, depth, num_heads, head_dim, mlp_dim, dropout = 0.):
-        super().__init__()
-        self.norm = nn.LayerNorm(dim)
-        self.layers = nn.ModuleList([])
-        for _ in range(depth):
-            self.layers.append(nn.ModuleList([
-                Attention(dim, num_heads, head_dim, dropout = dropout),
-                FeedForward(dim, mlp_dim, dropout = dropout)
-            ]))
-
-    def forward(self, x):
-        for attn, ff in self.layers:
-            # import pdb; pdb.set_trace()
-            x = attn(x) + x
-            x = ff(x) + x
-
-        return self.norm(x)
-
-class TargetEmbedding(nn.Module):
-    def __init__(self, embedding_dim, hidden_dim, num_layers, dropout = 0., out_type="cls"):
-        super().__init__()
-        self.embedding_dim = embedding_dim
-        self.hidden_dim = hidden_dim
-        self.num_layers = num_layers
-        self.cls_token = nn.Parameter(torch.randn(1, 1, self.embedding_dim))
-        self.transformer = Transformer(embedding_dim, num_layers, 8, embedding_dim // 8, hidden_dim, dropout = dropout)
-        self.out_type = "cls" if out_type == "cls" else "mean"
-
-    def forward(self, x):
-        """
-        Returns the embedding of the CLS token after passing through the transformer.
-        """
-        b, n, _ = x.shape
-
-        # cls_tokens = repeat(self.cls_token, '1 1 d -> b 1 d', b = b)
-        cls_tokens = self.cls_token.repeat(b, 1, 1)
-        x = torch.cat((cls_tokens, x), dim=1)
-        x = self.transformer(x)
-        return x[:,0] if self.out_type == "cls" else x[:,1:].mean(dim=1)
-
-# from https://github.com/facebookresearch/deit/blob/main/patchconvnet_models.py
-class Learned_Aggregation_Layer(nn.Module):
-    def __init__(
-        self,
-        dim: int,
-        num_heads: int = 1,
-        qkv_bias: bool = False,
-        qk_scale: float = None,
-        attn_drop: float = 0.0,
-        proj_drop: float = 0.0,
-    ):
-        super().__init__()
-        self.num_heads = num_heads
-        head_dim: int = dim // num_heads
-        # NOTE scale factor was wrong in my original version, can set manually to be compat with prev weights
-        self.scale = qk_scale if qk_scale is not None else head_dim**-0.5
-
-        self.cls_token = nn.Parameter(torch.randn(1, 1, dim))
-        self.q = nn.Linear(dim, dim, bias=qkv_bias)
-        self.k = nn.Linear(dim, dim, bias=qkv_bias)
-        self.v = nn.Linear(dim, dim, bias=qkv_bias)
-        self.id = nn.Identity()
-        self.attn_drop = nn.Dropout(attn_drop)
-        self.proj = nn.Linear(dim, dim)
-        self.proj_drop = nn.Dropout(proj_drop)
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        if x.dim() == 2:
-            x = x.unsqueeze(0)
-        B, N, C = x.shape
-        cls_tokens = self.cls_token.repeat(B, 1, 1)
-        q = self.q(cls_tokens).reshape(B, 1, self.num_heads, C // self.num_heads).permute(0, 2, 1, 3)
-        k = self.k(x).reshape(B, N, self.num_heads, C // self.num_heads).permute(0, 2, 1, 3)
-
-        q = q * self.scale
-        v = self.v(x).reshape(B, N, self.num_heads, C // self.num_heads).permute(0, 2, 1, 3)
-
-        attn = q @ k.transpose(-2, -1)
-        attn = self.id(attn)
-        attn = attn.softmax(dim=-1)
-        attn = self.attn_drop(attn)
-
-        x_cls = (attn @ v).transpose(1, 2).reshape(B, 1, C)
-        x_cls = self.proj(x_cls)
-        x_cls = self.proj_drop(x_cls)
-
-        return x_cls.squeeze()
-
-class AverageNonZeroVectors(torch.nn.Module):
-    def __init__(self, eps=1e-8):
-        super(AverageNonZeroVectors, self).__init__()
-        self.eps = eps
-
-    def forward(self, input_batch):
-        non_zero_mask = (input_batch.sum(dim=-1) != 0).float()
-        num_non_zero = non_zero_mask.sum(dim=1)
-        batch_sum = torch.sum(input_batch * non_zero_mask.unsqueeze(-1), dim=1)
-        batch_avg = batch_sum / (num_non_zero.unsqueeze(-1) + self.eps)
-
-        if torch.isnan(batch_avg).any() or torch.isinf(batch_avg).any():
-            print("NaN or Inf found in averaging operation")
-            batch_avg = torch.nan_to_num(batch_avg, nan=0.0, posinf=1.0, neginf=-1.0)
-
-        return batch_avg
 
 class DrugTargetCoembeddingLightning(pl.LightningModule):
     def __init__(
@@ -235,84 +88,14 @@ class DrugTargetCoembeddingLightning(pl.LightningModule):
             protein_projector = nn.Sequential(Learned_Aggregation_Layer(self.target_dim, num_heads=self.args.num_heads_agg, attn_drop=dropout, proj_drop=dropout), nn.Linear(self.target_dim, self.latent_dim))
 
         if 'model_size' in args and args.model_size == "large":  # override the above settings and use a large model for drug and target
-            self.drug_projector = nn.Sequential(
-                nn.Linear(self.drug_dim, 1260),
-                self.activation(),
-                nn.Dropout(dropout),
-                nn.BatchNorm1d(1260),
-                nn.Linear(1260, self.latent_dim),
-                self.activation(),
-                nn.Dropout(dropout),
-                nn.BatchNorm1d(self.latent_dim),
-                nn.Linear(self.latent_dim, self.latent_dim),
-                self.activation(),
-                nn.Dropout(dropout),
-                nn.BatchNorm1d(self.latent_dim),
-                nn.Linear(self.latent_dim, self.latent_dim),
-                self.activation()
-            )
-            nn.init.xavier_normal_(self.drug_projector[0].weight)
-            nn.init.xavier_normal_(self.drug_projector[4].weight)
-            nn.init.xavier_normal_(self.drug_projector[-2].weight)
-            nn.init.xavier_normal_(self.drug_projector[-6].weight)
-
-            protein_projector = nn.Sequential(
-                Learned_Aggregation_Layer(self.target_dim, attn_drop=dropout, proj_drop=dropout, num_heads=self.args.num_heads_agg),
-                nn.LayerNorm(self.target_dim),
-                self.activation(),
-                nn.Linear(self.target_dim, self.latent_dim),
-                nn.Dropout(dropout),
-                nn.LayerNorm(self.latent_dim),
-                self.activation(),
-                nn.Linear(self.latent_dim, self.latent_dim),
-                nn.Dropout(dropout),
-                nn.LayerNorm(self.latent_dim),
-                self.activation(),
-                nn.Linear(self.latent_dim, self.latent_dim),
-                nn.Dropout(dropout),
-                nn.LayerNorm(self.latent_dim),
-            )
+            self.drug_projector = LargeDrugProjector(self.drug_dim, self.latent_dim, self.activation, dropout)
+            protein_projector = LargeProteinProjector(self.target_dim, self.latent_dim, self.activation, self.args.num_heads_agg, attn_drop=dropout, proj_drop=dropout)
 
         self.target_projector = nn.Sequential(
             protein_projector,
             self.activation()
         )
 
-        if 'model_size' in args and args.model_size == "huge":  # override the above settings and use a large model for drug and target
-            self.drug_projector = nn.ModuleDict({
-                'proj': nn.Linear(self.drug_dim, 1260),
-                'res': nn.ModuleList([nn.Sequential(nn.Linear(1260, 1260), self.activation(), nn.Dropout(dropout), nn.LayerNorm(1260)) for _ in range(6)]),
-                'out': nn.Linear(1260, self.latent_dim),
-            })
-
-            self.target_projector = nn.ModuleDict({
-                'attn': nn.Sequential(
-                    Attention(self.target_dim, self.args.num_heads_agg, self.target_dim // self.args.num_heads_agg, dropout=dropout),
-                    Learned_Aggregation_Layer(self.target_dim, attn_drop=dropout, proj_drop=dropout, num_heads=self.args.num_heads_agg),
-                ),
-                'proj': nn.Linear(self.target_dim, 1260),
-                'res': nn.ModuleList([nn.Sequential(nn.Linear(1260, 1260), self.activation(), nn.Dropout(dropout), nn.LayerNorm(1260)) for _ in range(4)]),
-                'out': nn.Linear(1260, self.latent_dim),
-            })
-
-        if 'model_size' in args and args.model_size == "mega":  # override the above settings and use a large model for drug and target
-            self.drug_projector = nn.ModuleDict({
-                'proj': nn.Linear(self.drug_dim, 2048),
-                'res': nn.ModuleList([nn.Sequential(nn.Linear(2048, 2048), self.activation(), nn.Dropout(dropout), nn.LayerNorm(2048)) for _ in range(8)]),
-                'out': nn.Linear(2048, self.latent_dim),
-            })
-
-            self.target_projector = nn.ModuleDict({
-                'attn': nn.Sequential(
-                    Attention(self.target_dim, self.args.num_heads_agg, self.target_dim // self.args.num_heads_agg, dropout=dropout),
-                    Attention(self.target_dim, self.args.num_heads_agg, self.target_dim // self.args.num_heads_agg, dropout=dropout),
-                    Learned_Aggregation_Layer(self.target_dim, attn_drop=dropout, proj_drop=dropout, num_heads=self.args.num_heads_agg),
-                ),
-                'proj': nn.Linear(self.target_dim, 2048),
-                'res': nn.ModuleList([nn.Sequential(nn.Linear(2048, 2048), self.activation(), nn.Dropout(dropout), nn.LayerNorm(2048)) for _ in range(6)]),
-                'out': nn.Linear(2048, self.latent_dim),
-            })
-        
         if 'prot_proj' not in args or args.prot_proj == "avg":
             nn.init.xavier_normal_(self.target_projector[0][1].weight)
 
@@ -362,26 +145,14 @@ class DrugTargetCoembeddingLightning(pl.LightningModule):
     def forward(self, drug, target):
         model_size = self.args.model_size
         sigmoid_scalar = self.args.sigmoid_scalar
-        if model_size == 'huge' or model_size == 'mega':
-            y = self.drug_projector['proj'](drug)
-            for layer in self.drug_projector['res']:
-                y = y + layer(y)
-            drug_projection = self.drug_projector['out'](y)
-        else:
-            drug_projection = self.drug_projector(drug)
+
+        drug_projection = self.drug_projector(drug)
 
         # Add a batch dimension if it's missing
         if target.dim() == 2:
             target = target.unsqueeze(0)
 
-        if model_size == 'huge' or model_size == 'mega':
-            z = self.target_projector['attn'](target)
-            z = self.target_projector['proj'](z)
-            for layer in self.target_projector['res']:
-                z = z + layer(z)
-            target_projection = self.target_projector['out'](z)
-        else:
-            target_projection = self.target_projector(target)
+        target_projection = self.target_projector(target)
 
         if self.classify:
             similarity = sigmoid_scalar * F.cosine_similarity(
@@ -528,24 +299,10 @@ class DrugTargetCoembeddingLightning(pl.LightningModule):
     def embed(self, x, sample_type="drug"):
         model_size = self.args.model_size
         if sample_type == "drug":
-            if model_size == 'huge' or model_size == 'mega':
-                y = self.drug_projector['proj'](x)
-                for layer in self.drug_projector['res']:
-                    y = y + layer(y)
-                drug_projection = self.drug_projector['out'](y)
-            else:
-                drug_projection = self.drug_projector(x)
+            drug_projection = self.drug_projector(x)
             return drug_projection
-
         elif sample_type == "target":
-            if model_size == 'huge' or model_size == 'mega':
-                z = self.target_projector['attn'](x)
-                z = self.target_projector['proj'](z)
-                for layer in self.target_projector['res']:
-                    z = z + layer(z)
-                target_projection = self.target_projector['out'](z)
-            else:
-                target_projection = self.target_projector(x)
+            target_projection = self.target_projector(x)
             return target_projection
 
 
