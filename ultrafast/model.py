@@ -48,7 +48,7 @@ class DrugTargetCoembeddingLightning(pl.LightningModule):
         latent_dim=1024,
         activation=nn.LeakyReLU,
         classify=True,
-        num_layers_target=1,
+        prot_proj='agg',
         dropout=0.05,
         lr=1e-4,
         contrastive=False,
@@ -67,24 +67,16 @@ class DrugTargetCoembeddingLightning(pl.LightningModule):
         self.contrastive = contrastive
         self.args = args
 
-        if args.drug_layers == 1:
-            self.drug_projector = nn.Sequential(
-                nn.Linear(self.drug_dim, self.latent_dim), self.activation()
-            )
-            nn.init.xavier_normal_(self.drug_projector[0].weight)
-        elif args.drug_layers == 2:
-            self.drug_projector = nn.Sequential(
-                nn.Linear(self.drug_dim, 1260), self.activation(),
-                nn.Linear(1260, self.latent_dim), self.activation()
-            )
-            nn.init.xavier_normal_(self.drug_projector[0].weight)
-            nn.init.xavier_normal_(self.drug_projector[2].weight)
+        self.drug_projector = nn.Sequential(
+            nn.Linear(self.drug_dim, self.latent_dim), self.activation()
+        )
+        nn.init.xavier_normal_(self.drug_projector[0].weight)
 
-        if 'prot_proj' not in args or args.prot_proj == "avg":
+        if prot_proj == "avg":
             protein_projector=nn.Sequential(AverageNonZeroVectors(), nn.Linear(self.target_dim, self.latent_dim))
-        elif args.prot_proj == "transformer":
+        elif prot_proj == "transformer":
             protein_projector = TargetEmbedding( self.target_dim, self.latent_dim, num_layers_target, dropout=dropout, out_type=args.out_type)
-        elif args.prot_proj == "agg":
+        elif prot_proj == "agg":
             protein_projector = nn.Sequential(Learned_Aggregation_Layer(self.target_dim, num_heads=self.args.num_heads_agg, attn_drop=dropout, proj_drop=dropout), nn.Linear(self.target_dim, self.latent_dim))
 
         if 'model_size' in args and args.model_size == "large":  # override the above settings and use a large model for drug and target
@@ -96,7 +88,7 @@ class DrugTargetCoembeddingLightning(pl.LightningModule):
             self.activation()
         )
 
-        if 'prot_proj' not in args or args.prot_proj == "avg":
+        if prot_proj == "avg":
             nn.init.xavier_normal_(self.target_projector[0][1].weight)
 
         if self.classify:

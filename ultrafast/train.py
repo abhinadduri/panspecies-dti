@@ -18,7 +18,6 @@ from ultrafast.callbacks import eval_pcba
 from ultrafast.datamodules import (
     get_task_dir,
     DTIDataModule,
-    DTIStructDataModule,
     TDCDataModule,
     DUDEDataModule,
     EnzPredDataModule,
@@ -49,7 +48,6 @@ def train_cli():
     )
     parser.add_argument("--drug-featurizer", help="Drug featurizer", dest="drug_featurizer")
     parser.add_argument("--target-featurizer", help="Target featurizer", dest="target_featurizer")
-    parser.add_argument("--distance-metric", help="Distance in embedding space to supervise with", dest="distance_metric")
     parser.add_argument("--epochs", type=int, help="number of total epochs to run")
     parser.add_argument("--lr", "--learning-rate", type=float, help="initial learning rate", dest="lr",)
     parser.add_argument("--clr", type=float, help="contrastive initial learning rate", dest="clr")
@@ -58,19 +56,17 @@ def train_cli():
     parser.add_argument("--InfoNCETemp", "-T", default=1.0, type=float, help="InfoNCE temperature", dest="InfoNCETemp")
     parser.add_argument("--r", "--replicate", type=int, help="Replicate", dest="replicate")
     parser.add_argument("--d", "--device", default=0, type=int, help="CUDA device", dest="device")
-    parser.add_argument("--verbosity", type=int, help="Level at which to log", dest="verbosity")
     parser.add_argument("--checkpoint", default=None, help="Model weights to start from")
-    parser.add_argument('--prot-proj', choices=["avg","agg","transformer", "genagg"], help="Change the protein projector method")
+    parser.add_argument('--prot-proj', choices=["avg","agg","transformer"], help="Change the protein projector method")
     parser.add_argument('--out-type', choices=['cls','mean'], help="use cls token or mean of everything else")
 
     parser.add_argument("--num-layers-target", type=int, help="Number of layers in target transformer", dest="num_layers_target")
-    parser.add_argument("--drug-layers", type=int, choices=[1, 2], help="Number of layers in drug transformer", dest="drug_layers")
     parser.add_argument("--num-heads-agg", type=int, default=4, help="Number of attention heads for learned aggregation", dest="num_heads_agg")
     parser.add_argument("--dropout", type=float, help="Dropout rate for transformer", dest="dropout")
-    parser.add_argument("--batch-size", type=int, default=32, help="batch size for training/val/test")
+    parser.add_argument("--batch-size", type=int, default=64, help="batch size for training/val/test")
     parser.add_argument("--num-workers", type=int, default=0, help="number of workers for intial data processing and dataloading during training")
     parser.add_argument("--no-wandb", action="store_true", help="Do not use wandb")
-    parser.add_argument("--model-size", default="small", choices=["small", "large", "huge", "mega"], help="Choose the size of the model")
+    parser.add_argument("--model-size", default="small", choices=["small", "large"], help="Choose the size of the model")
     parser.add_argument("--ship-model", help="Train a final to ship model, while excluding the uniprot id's specified by this argument.", dest="ship_model")
     parser.add_argument("--eval-pcba", action="store_true", help="Evaluate PCBA during validation")
     parser.add_argument("--sigmoid-scalar", type=int, default=5, dest="sigmoid_scalar")
@@ -85,7 +81,6 @@ def train(
     task: str,
     drug_featurizer: str,
     target_featurizer: str,
-    distance_metric: str,
     epochs: int,
     lr: float,
     clr: float,
@@ -94,12 +89,10 @@ def train(
     InfoNCETemp: float,
     replicate: int,
     device: int,
-    verbosity: int,
     checkpoint: str,
     prot_proj: str,
     out_type: str,
     num_layers_target: int,
-    drug_layers: int,
     dropout: float,
     batch_size: int,
     num_workers: int,
@@ -117,7 +110,6 @@ def train(
         task=task,
         drug_featurizer=drug_featurizer,
         target_featurizer=target_featurizer,
-        distance_metric=distance_metric,
         epochs=epochs,
         lr=lr,
         clr=clr,
@@ -126,12 +118,10 @@ def train(
         InfoNCETemp=InfoNCETemp,
         replicate=replicate,
         device=device,
-        verbosity=verbosity,
         checkpoint=checkpoint,
         prot_proj=prot_proj,
         out_type=out_type,
         num_layers_target=num_layers_target,
-        drug_layers=drug_layers,
         dropout=dropout,
         batch_size=batch_size,
         num_workers=num_workers,
@@ -224,8 +214,6 @@ def train(
             datamodule = TDCDataModule(**task_dm_kwargs)
         elif config.task in EnzPredDataModule.dataset_list():
             RuntimeError("EnzPredDataModule not implemented yet")
-        elif config.target_featurizer == 'SaProtFeaturizer':
-            datamodule = DTIStructDataModule(**task_dm_kwargs)
         else:
             datamodule = DTIDataModule(**task_dm_kwargs)
 
@@ -246,7 +234,7 @@ def train(
             classify=config.classify,
             contrastive=config.contrastive,
             InfoNCEWeight=config.InfoNCEWeight,
-            num_layers_target=config.num_layers_target,
+            prot_proj=config.prot_proj,
             dropout=config.dropout,
             device=device,
             args=config
@@ -260,7 +248,7 @@ def train(
             classify=config.classify,
             contrastive=config.contrastive,
             InfoNCEWeight=config.InfoNCEWeight,
-            num_layers_target=config.num_layers_target,
+            prot_proj = config.prot_proj,
             dropout=config.dropout,
             args=config
         )
