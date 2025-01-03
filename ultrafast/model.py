@@ -399,7 +399,7 @@ class DrugTargetCoembeddingLightning(pl.LightningModule):
     def configure_optimizers(self):
         optimizers = []
         lr_schedulers = []
-        optimizer = torch.optim.Adam(self.parameters(), lr=self.args.lr)
+        optimizer = torch.optim.Adam(self.parameters(), lr=self.args.lr, weight_decay=0.0 if not hasattr(self.args, 'weight_decay') else self.args.weight_decay) 
         lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
             optimizer, T_0= self.args.lr_t0
             )
@@ -522,6 +522,7 @@ class DrugTargetCoembeddingLightning(pl.LightningModule):
             else:
                 metric(torch.Tensor(self.test_step_outputs).cuda(), torch.Tensor(self.test_step_targets).to(torch.float).cuda())
             self.log(f"test/{name}", metric, on_step=False, on_epoch=True, sync_dist=True if self.trainer.num_devices > 1 else False)
+
 
         self.test_step_outputs.clear()
         self.test_step_targets.clear()
