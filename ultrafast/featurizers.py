@@ -550,6 +550,49 @@ class ProtBertFeaturizer(Featurizer):
 
         return results
 
+class AMPLIFYFeaturizer(Featurizer):
+    def __init__(self, shape: int = 960, save_dir: Path = Path().absolute(), ext: str = "h5", batch_size: int = 16, **kwargs):
+        super().__init__("AMPLIFY", shape, "target", save_dir, ext, batch_size, **kwargs)
+
+        self._device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
+        self.model = AutoModel.from_pretrained("chandar-lab/AMPLIFY_350M", trust_remote_code=True, cache_dir=f"models/huggingface/transformers")
+        self._tokenizer = AutoTokenizer.from_pretrained("chandar-lab/AMPLIFY_350M", trust_remote_code=True, cache_dir=f"models/huggingface/transformers")
+        self.model = self.model.to(self._device)
+        self.model.eval()
+
+        self._max_len = 1024
+
+    def _transform_single(self, seq: str) -> torch.Tensor:
+        max_seq_len = self._max_len - 2
+        # Truncate sequence if necessary
+        seq = seq[:max_seq_len]
+        try:
+            ids = self._tokenizer(seq, return_tensors="pt")
+            input_ids = torch.tensor(ids['input_ids']).to(self._device)
+
+            embeddings = self.model(input_ids=input_ids, output_hidden_states=True)#, attention_mask=attention_mask)
+            embeddings = embeddings.hidden_states[-1].detach().cpu()
+
+            seq_len = len(seq)
+            start_idx = 1
+            end_idx = seq_len + 1
+            return embeddings.squeeze()[start_idx:end_idx]
+        except Exception as e:
+            print(f"Error featurizing single sequence: {seq}")
+            print(e)
+            return torch.zeros((len(seq), self.shape)) # zero vector for each token
+
+    def _transform(self, seqs: List[str]) -> List[torch.Tensor]:
+        results = []
+        max_seq_len = self._max_len - 2
+        # Truncate sequences if necessary
+        seqs = [seq[:max_seq_len] for seq in seqs]
+
+        results = [self._transform_single(seq) for seq in seqs]
+        
+        torch.cuda.empty_cache()  # Clear GPU cache after processing
+        return results
+
 class ESM2Featurizer(Featurizer):
     def __init__(self, shape: int = 1280, save_dir: Path = Path().absolute(), ext: str = "h5", batch_size: int = 16, **kwargs):
         super().__init__("ESM2", shape, "target", save_dir, ext, batch_size, **kwargs)
