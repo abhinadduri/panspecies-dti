@@ -744,6 +744,8 @@ class SaProtFeaturizer(Featurizer):
     @staticmethod
     def prepare_string(seq, max_len=1024):
         if seq.isupper() and '#' not in seq: #if no 3Di tokens
+            if 'X' in seq:
+                seq = seq.replace('X', '#')
             seq = '#'.join(seq) + '#'
         if len(seq) > max_len - 2:
             seq = seq[: max_len * 2 - 2]
