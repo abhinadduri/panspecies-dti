@@ -28,7 +28,7 @@ Proteins are embedded with [SaProt](https://github.com/westlake-repl/SaProt), fo
 The model is trained in a fully supervised manner to predict the interaction between proteins and ligands.
 
 
-## Install
+# Install
 ```
 # Install from source
 git clone https://github.com/abhinadduri/panspecies-dti.git
@@ -41,9 +41,18 @@ install git+https://github.com/abhinadduri/panspecies-dti.git
 If you want to use DDP for faster training, first follow the above installation instructions.
 Then manually downgrade lightning to 2.0.8 via `pip install lightning==2.0.8`
 
-## Reproducing the paper
+## Download MERGED dataset
+Script to download splits and data:
+```
+cd data/MERGED/huge_data/
+bash download.sh
+cd -
+```
+
+
+# Reproducing the paper
 Reproducing the drug-target interaction models in the paper.
-#### DTI Prediction
+### DTI Prediction
 The code below reproduces the DTI prediction on the DAVIS dataset.
 ```
 # Reproducing ConPLex
@@ -57,7 +66,7 @@ ultrafast-train --exp-id DAVIS --config configs/saprot_agg_config.yaml --model-s
 ```
 Other DTI dataset models can be reproduced by adding ``--task`` to the commandline with: ``biosnap``, ``bindingdb``, ``biosnap_prot``(Unseen Targets), ``biosnap_mol``(Unseen Drugs), or ``merged``
 
-#### Lit-PCBA
+### Lit-PCBA
 ```
 # SPRINT
 ultrafast-train --exp-id LitPCBA --config configs/saprot_agg_config.yaml --epochs 15 --ship-model data/MERGED/huge_data/uniprots_excluded_at_90.txt
@@ -68,7 +77,7 @@ ultrafast-train --exp-id LitPCBA --config configs/saprot_agg_config.yaml --targe
 ```
 Adding ``--eval-pcba`` can show the performance on the Lit-PCBA dataset after epoch of training.
 
-#### TDC Leaderboard
+### TDC Leaderboard
 ```
 # SPRINT
 ultrafast-train --exp-id TDC --config configs/TDC_config.yaml 
@@ -78,20 +87,12 @@ ultrafast-train --exp-id TDC --config configs/TDC_config.yaml --target-featurize
 ultrafast-train --exp-id TDC --config configs/TDC_config.yaml --target-featurizer ESM2Featurizer
 ```
 
-## Download pre-trained model
+# Download pre-trained model
 Links to download pre-trained models are in `checkpoints/README.md`.
 
 Once downloaded, just `gunzip` the file to get the ready-to-use model checkpoint.
 
-## Download MERGED dataset
-Script to download splits and data:
-```
-cd data/MERGED/huge_data/
-bash download.sh
-cd -
-```
-
-## Embed proteins and molecules
+# Embed proteins and molecules
 ```
 # Get target embeddings with pre-trained model
 ultrafast-embed --data-file data/BIOSNAP/full_data/test.csv  \
@@ -105,7 +106,7 @@ ultrafast-embed --data-file data/BIOSNAP/full_data/test.csv  \
     --moltype drug \ 
     --output_path results/BIOSNAP_test_drug_embeddings.npy
 ```
-## Vector Database
+# Vector Database
 ### Make a vector database of drugs
 ```
 ultrafast-store --data-file data/BIOSNAP/full_data/test.csv  \
