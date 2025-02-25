@@ -1,32 +1,17 @@
 # SPRINT
-**S**tructure-aware **PR**otein ligand **INT**eraction (SPRINT) is a ultrafast deep learning framework for drug-target interaction prediction. Code for the MLSB 2024 paper [SPRINT: Ultrafast Drug-Target Interaction Prediction with Structure-Aware Protein Embeddings](https://arxiv.org/abs/2411.15418).
+Code for the paper [Scaling Structure Aware Virtual Screening to Billions of Molecules with SPRINT](https://arxiv.org/abs/2411.15418) and the MLSB 2024 paper [SPRINT: Ultrafast Drug-Target Interaction Prediction with Structure-Aware Protein Embeddings](https://arxiv.org/abs/2411.15418v1).
+
+**S**tructure-aware **PR**otein ligand **INT**eraction (SPRINT) is a ultrafast deep learning framework for drug-target interaction prediction and binding affinity prediction.
 
 SPRINT can be used in a Google Colab notebook here:
 [![ColabScreen](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/drive/1vSYzL_KvzyGHhIDq3h3qcITB8cuxE4ZU?usp=sharing)
 
 All datasets are located in the `data` folder.
 
-<!-- I cannot get this TOC to work. -->
-<!-- <details open> -->
-<!-- <summary><b>Table of contents</b></summary> -->
-<!--  * [Overview](#overview) -->
-<!--  * [Install](#install) -->
-<!--  * [Train a model](#train-a-model) -->
-<!--  * [Model Checkpoints](#download-pre-trained-model) -->
-<!--  * [MERGED Dataset](#download-MERGED-dataset) -->
-<!--  * [Embed Proteins and Molecules](#embed-proteins-and-molecules) -->
-<!--  * [Vector Database](#vector-database) -->
-<!--    - [Make a vector database of drugs](#make-a-vector-database-of-drugs) -->
-<!--    - [Report top-k accuracy by querying targets against the drug database](#report-top-k-accuracy-by-querying-targets-against-the-drug-database) -->
-<!--  * [Compute TopK Hits](#compute-TopK-Hits-for-a-given-Query) -->
-<!--  * [Generate SaProt sequence](#generate-SaProt-sequence-for-a-given-protein-structure) -->
-<!-- </details> -->
-
 ## Overview
 The protein and ligand are co-embedded in a shared space, enabling interaction prediction at the speed of a single dot product.
 Proteins are embedded with [SaProt](https://github.com/westlake-repl/SaProt), followed by a Attention-Pooling layer, and small MLP. Ligands are embedded using Morgan Fingerprints and a small MLP.
 The model is trained in a fully supervised manner to predict the interaction between proteins and ligands.
-
 
 # Install
 ```
