@@ -1,31 +1,19 @@
 # SPRINT
-**S**tructure-aware **PR**otein ligand **INT**eraction (SPRINT) is a ultrafast deep learning framework for drug-target interaction prediction. Code for the MLSB 2024 paper [SPRINT: Ultrafast Drug-Target Interaction Prediction with Structure-Aware Protein Embeddings](https://arxiv.org/abs/2411.15418).
+Code for the paper [Scaling Structure Aware Virtual Screening to Billions of Molecules with SPRINT](https://arxiv.org/abs/2411.15418) and the MLSB 2024 paper [SPRINT: Ultrafast Drug-Target Interaction Prediction with Structure-Aware Protein Embeddings](https://arxiv.org/abs/2411.15418v1).
+
+**S**tructure-aware **PR**otein ligand **INT**eraction (SPRINT) is a ultrafast deep learning framework for drug-target interaction prediction and binding affinity prediction.
+
+SPRINT can be used in a Google Colab notebook here:
+[![ColabScreen](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/drive/1vSYzL_KvzyGHhIDq3h3qcITB8cuxE4ZU?usp=sharing)
 
 All datasets are located in the `data` folder.
-
-<!-- I cannot get this TOC to work. -->
-<!-- <details open> -->
-<!-- <summary><b>Table of contents</b></summary> -->
-<!--  * [Overview](#overview) -->
-<!--  * [Install](#install) -->
-<!--  * [Train a model](#train-a-model) -->
-<!--  * [Model Checkpoints](#download-pre-trained-model) -->
-<!--  * [MERGED Dataset](#download-MERGED-dataset) -->
-<!--  * [Embed Proteins and Molecules](#embed-proteins-and-molecules) -->
-<!--  * [Vector Database](#vector-database) -->
-<!--    - [Make a vector database of drugs](#make-a-vector-database-of-drugs) -->
-<!--    - [Report top-k accuracy by querying targets against the drug database](#report-top-k-accuracy-by-querying-targets-against-the-drug-database) -->
-<!--  * [Compute TopK Hits](#compute-TopK-Hits-for-a-given-Query) -->
-<!--  * [Generate SaProt sequence](#generate-SaProt-sequence-for-a-given-protein-structure) -->
-<!-- </details> -->
 
 ## Overview
 The protein and ligand are co-embedded in a shared space, enabling interaction prediction at the speed of a single dot product.
 Proteins are embedded with [SaProt](https://github.com/westlake-repl/SaProt), followed by a Attention-Pooling layer, and small MLP. Ligands are embedded using Morgan Fingerprints and a small MLP.
 The model is trained in a fully supervised manner to predict the interaction between proteins and ligands.
 
-
-## Install
+# Install
 ```
 # Install from source
 git clone https://github.com/abhinadduri/panspecies-dti.git
@@ -38,24 +26,6 @@ install git+https://github.com/abhinadduri/panspecies-dti.git
 If you want to use DDP for faster training, first follow the above installation instructions.
 Then manually downgrade lightning to 2.0.8 via `pip install lightning==2.0.8`
 
-## Train a model
-Reproducing the drug-target interaction model in the MLCB 2024 abstract.
-```
-# Default config
-ultrafast-train --exp-id mlcb --config configs/default_config.yaml
-# Attention pooling
-ultrafast-train --exp-id mlcb --config configs/agg_config.yml
-```
-
-The example script above will generate ProtBert and store ProtBert per-residue embeddings in a file `data/BIOSNAP/full_data/train.csv.prot.h5`.
-
-The goal to start attention pooling training is to run the above script on all nested `*.csv` files with protein sequences in the data folder.
-
-## Download pre-trained model
-Links to download pre-trained models are in `checkpoints/README.md`.
-
-Once downloaded, just `gunzip` the file to get the ready-to-use model checkpoint.
-
 ## Download MERGED dataset
 Script to download splits and data:
 ```
@@ -64,7 +34,50 @@ bash download.sh
 cd -
 ```
 
-## Embed proteins and molecules
+
+# Reproducing the paper
+Reproducing the drug-target interaction models in the paper.
+### DTI Prediction
+The code below reproduces the DTI prediction on the DAVIS dataset.
+```
+# Reproducing ConPLex
+ultrafast-train --exp-id DAVIS --config configs/conplex_config.yaml
+# ConPLex-attn
+ultrafast-train --exp-id DAVIS --config configs/saprot_agg_config.yaml --prot_proj agg
+# SPRINT-sm
+ultrafast-train --exp-id DAVIS --config configs/saprot_agg_config.yaml 
+# SPRINT
+ultrafast-train --exp-id DAVIS --config configs/saprot_agg_config.yaml --model-size large
+```
+Other DTI dataset models can be reproduced by adding ``--task`` to the commandline with: ``biosnap``, ``bindingdb``, ``biosnap_prot``(Unseen Targets), ``biosnap_mol``(Unseen Drugs), or ``merged``
+
+### Lit-PCBA
+```
+# SPRINT
+ultrafast-train --exp-id LitPCBA --config configs/saprot_agg_config.yaml --epochs 15 --ship-model data/MERGED/huge_data/uniprots_excluded_at_90.txt
+# SPRINT-Average
+ultrafast-train --exp-id LitPCBA --config configs/saprot_agg_config.yaml --prot-proj avg --epochs 15 --ship-model data/MERGED/huge_data/uniprots_excluded_at_90.txt 
+# SPRINT-ProtBert
+ultrafast-train --exp-id LitPCBA --config configs/saprot_agg_config.yaml --target-featurizer ProtBertFeaturizer --epochs 15 --ship-model data/MERGED/huge_data/uniprots_excluded_at_90.txt 
+```
+Adding ``--eval-pcba`` can show the performance on the Lit-PCBA dataset after epoch of training.
+
+### TDC Leaderboard
+```
+# SPRINT
+ultrafast-train --exp-id TDC --config configs/TDC_config.yaml 
+# SPRINT-ProtBert
+ultrafast-train --exp-id TDC --config configs/TDC_config.yaml --target-featurizer ProtBertFeaturizer
+# SPRINT-ESM2
+ultrafast-train --exp-id TDC --config configs/TDC_config.yaml --target-featurizer ESM2Featurizer
+```
+
+# Download pre-trained model
+Links to download pre-trained models are in `checkpoints/README.md`.
+
+Once downloaded, just `gunzip` the file to get the ready-to-use model checkpoint.
+
+# Embed proteins and molecules
 ```
 # Get target embeddings with pre-trained model
 ultrafast-embed --data-file data/BIOSNAP/full_data/test.csv  \
@@ -78,7 +91,7 @@ ultrafast-embed --data-file data/BIOSNAP/full_data/test.csv  \
     --moltype drug \ 
     --output_path results/BIOSNAP_test_drug_embeddings.npy
 ```
-## Vector Database
+# Vector Database
 ### Make a vector database of drugs
 ```
 ultrafast-store --data-file data/BIOSNAP/full_data/test.csv  \
@@ -122,6 +135,3 @@ The protein structure can be in PDB or mmCIF format. The script will generate th
 python utils/structure_to_saprot.py -I [path to the protein structure] --chain [chain of protein] -O [path to the output file]
 ```
 If the protein was **NOT** generated by AF2 or another tool that outputs a confidence score, add `--no-plddt-mask` to the command.
-
-# Predict new drug-target interactions
-TODO
