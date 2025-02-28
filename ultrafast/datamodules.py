@@ -35,7 +35,6 @@ def get_task_dir(task_name: str):
         "biosnap": "./data/BIOSNAP/full_data",
         "biosnap_prot": "./data/BIOSNAP/unseen_protein",
         "biosnap_mol": "./data/BIOSNAP/unseen_drug",
-        "test_data": "./data/test_data",
         "bindingdb": "./data/BindingDB",
         "davis": "./data/DAVIS",
         "dti_dg": "./data/TDC",
@@ -46,8 +45,8 @@ def get_task_dir(task_name: str):
         "esterase": "./data/EnzPred/esterase_binary",
         "kinase": "./data/EnzPred/davis_filtered",
         "phosphatase": "./data/EnzPred/phosphatase_chiral_binary",
-        "leash": "./data/leash/",
         "merged": "./data/MERGED/huge_data",
+        "custom": "./data/custom/",
     }
 
     return Path(task_paths[task_name.lower()]).resolve()

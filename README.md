@@ -21,7 +21,7 @@ cd panspecies-dti
 pip install -e .
 
 # Or install directly from pip
-install git+https://github.com/abhinadduri/panspecies-dti.git
+pip install git+https://github.com/abhinadduri/panspecies-dti.git
 ```
 If you want to use DDP for faster training, first follow the above installation instructions.
 Then manually downgrade lightning to 2.0.8 via `pip install lightning==2.0.8`
@@ -33,7 +33,6 @@ cd data/MERGED/huge_data/
 bash download.sh
 cd -
 ```
-
 
 # Reproducing the paper
 Reproducing the drug-target interaction models in the paper.
@@ -73,38 +72,42 @@ ultrafast-train --exp-id TDC --config configs/TDC_config.yaml --target-featurize
 ```
 
 # Download pre-trained model
-Links to download pre-trained models are in `checkpoints/README.md`.
-
-Once downloaded, just `gunzip` the file to get the ready-to-use model checkpoint.
+Links to download pre-trained models used for Lit-PCBA evaluation in Table 2 are in `checkpoints/README.md`.
 
 # Embed proteins and molecules
+Embed a library of proteins/molecules, using `--data-file`: a CSV/TSV file (separator inferred). The `--data-file` to embed must contain a "SMILES" or "Target Sequence" column for drug or target embedding, respectively.
+
+If using a SaProt trained checkpoint, the "Target Sequence" should be a structure-aware sequence with residue and structure tokens (e.g. "RaTcIqAvKvQqIwQdMfVd"). Structure-aware sequences can be generated following [Generate SaProt sequence for a given protein structure](#generate-saprot-sequence-for-a-given-protein-structure). If no structure tokens are detected, a mask token will be used for each resiude's structure token. 
+# 
+
 ```
 # Get target embeddings with pre-trained model
-ultrafast-embed --data-file data/BIOSNAP/full_data/test.csv  \
-    --checkpoint checkpoints/saprot_agg_contrast_biosnap_maxf1.ckpt \
+ultrafast-embed --data-file data/DAVIS/test_foldseek.csv  \
+    --checkpoint checkpoints/saprot.ckpt \
     --moltype target \ 
-    --output_path results/BIOSNAP_test_target_embeddings.npy
+    --output-path results/DAVIS_test_target_embeddings.npy
 
 # Get drug embeddings with pre-trained model
-ultrafast-embed --data-file data/BIOSNAP/full_data/test.csv  \
-    --checkpoint checkpoints/saprot_agg_contrast_biosnap_maxf1.ckpt \
+ultrafast-embed --data-file data/DAVIS/test_foldseek.csv  \
+    --checkpoint checkpoints/saprot.ckpt \
     --moltype drug \ 
-    --output_path results/BIOSNAP_test_drug_embeddings.npy
+    --output-path results/DAVIS_test_drug_embeddings.npy
 ```
 # Vector Database
+The following section details the usage of a [ChromaDB](https://docs.trychroma.com/docs/overview/introduction) for ultrafast retrieval of DTIs. Note that creation of the database is a computationally costly preprocessing step, but it only needs to be done once for a given library.
 ### Make a vector database of drugs
 ```
-ultrafast-store --data-file data/BIOSNAP/full_data/test.csv  \
-    --embeddings results/BIOSNAP_test_drug_embeddings.npy \
+ultrafast-store --data-file data/DAVIS/test_foldseek.csv  \
+    --embeddings results/DAVIS_test_drug_embeddings.npy \
     --moltype drug \
     --db_dir ./dbs \
-    --db_name biosnap_test_drug_embeddings
+    --db_name davis_test_drug_embeddings
 ```
 
 ### Report top-k accuracy by querying targets against the drug database
 ```
-ultrafast-report --data-file data/BIOSNAP/full_data/test.csv  \
-    --embeddings results/BIOSNAP_test_target_embeddings.npy \
+ultrafast-report --data-file data/DAVIS/test_foldseek.csv  \
+    --embeddings results/DAVIS_test_target_embeddings.npy \
     --moltype target \
     --db_dir ./dbs \
     --db_name biosnap_test_drug_embeddings \
@@ -112,17 +115,19 @@ ultrafast-report --data-file data/BIOSNAP/full_data/test.csv  \
 ```
 
 # Compute TopK Hits for a given Query
+This section details finding the TopK hits without using ChromaDB. This is likely faster if you are only going to query a library a few times or if you can massively parallelize the TopK search.
+
 We can compute the TopK hits for a set of targets against a database of drugs.
 ```
-ultrafast-topk --library-embeddings results/BIOSNAP_test_drug_embeddings.npy \
-    --library-type drug --library-data data/BIOSNAP/full_data/test.csv \
-    --query-embeddings results/BIOSNAP_test_target_embeddings.npy \
-    --query-data data/BIOSNAP/full_data/test.csv \
+ultrafast-topk --library-embeddings results/DAVIS_test_drug_embeddings.npy \
+    --library-type drug --library-data data/DAVIS/test_foldseek.csv \
+    --query-embeddings results/DAVIS_test_target_embeddings.npy \
+    --query-data data/DAVIS/test_foldseek.csv \
     -K 100
 ```
 or we can compute the TopK hits for a set of drugs against a database of targets by swapping the library and query arguments and changing the `--library-type`.
 
-If you are computing the TopK hits for a large database, it is often faster to break it up into smaller chunks and compute the TopK per chunk. The chunks can be combined at the end to get the final TopK hits for the entire database:
+If you are computing the TopK hits for a large database, it is often faster to break it up into smaller chunks and compute the TopK per chunk in a parallel fashion. The chunks can be combined at the end to get the final TopK hits for the entire database:
 ```
 python utils/combine_chunks.py [directory containing the TopK per chunk] -K 100 -O [output file]
 ```
@@ -135,3 +140,19 @@ The protein structure can be in PDB or mmCIF format. The script will generate th
 python utils/structure_to_saprot.py -I [path to the protein structure] --chain [chain of protein] -O [path to the output file]
 ```
 If the protein was **NOT** generated by AF2 or another tool that outputs a confidence score, add `--no-plddt-mask` to the command.
+
+# Training from scratch
+When training a SPRINT DTI Classification model from scratch, you need train/val/test CSV files with the following columns:
+```
+SMILES,Target Sequence,Label
+```
+where `SMILES` is the drug SMILES string, `Target Sequence` is the amino acid sequence of the target, and `Label` is a 0/1 value to indicate non-binding or binding, respectively.
+
+CSV files should be placed in `data/custom/`
+
+Models utilizing SaProt as the `--target-featurizer` must have structure-aware sequences in the `Target Sequence` column and the CSVs should be renamed to `*_foldseek.csv` where `*` is train/val/test.
+
+Models can be trained using:
+```
+ultrafast-train --exp-id custom --task custom --config configs/saprot_agg_config.yaml --model-size large
+```
