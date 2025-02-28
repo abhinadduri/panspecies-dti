@@ -72,7 +72,7 @@ ultrafast-train --exp-id TDC --config configs/TDC_config.yaml --target-featurize
 ```
 
 # Download pre-trained model
-Links to download pre-trained models used for Lit-PCBA evaluation in Table 2 are in `checkpoints/README.md`.
+Links to download pre-trained models used for Lit-PCBA evaluation in Table 2 are in [checkpoints/README.md](checkpoints/README.md).
 
 # Embed proteins and molecules
 Embed a library of proteins/molecules, using `--data-file`: a CSV/TSV file (separator inferred). The `--data-file` to embed must contain a "SMILES" or "Target Sequence" column for drug or target embedding, respectively.
