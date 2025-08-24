@@ -14,7 +14,7 @@ from pathlib import Path
 
 import argparse
 
-from ultrafast.callbacks import eval_pcba
+from ultrafast.callbacks import eval_pcba, eval_dude
 from ultrafast.datamodules import (
     get_task_dir,
     DTIDataModule,
@@ -31,6 +31,21 @@ from ultrafast.utils import get_featurizer, xavier_normal
 class PCBAEvaluationCallback(Callback):
     def on_validation_epoch_end(self, trainer, pl_module):
         eval_pcba(trainer, pl_module)
+
+class DUDeEvaluationCallback(Callback):
+    def on_validation_epoch_end(self, trainer, pl_module):
+        eval_dude(trainer, pl_module)
+
+class SaveEveryEpochCallback(Callback):
+    def __init__(self, save_dir):
+        super().__init__()
+        self.save_dir = save_dir
+
+    def on_epoch_end(self, trainer, pl_module):
+        epoch = trainer.current_epoch
+        path = f"{self.save_dir}/model_epoch_{epoch}.ckpt"
+        trainer.save_checkpoint(path)
+
 
 def train_cli():
     parser = argparse.ArgumentParser(description="PLM_DTI Training.")
@@ -73,6 +88,7 @@ def train_cli():
     parser.add_argument("--model-size", default="small", choices=["small", "large"], help="Choose the size of the model")
     parser.add_argument("--ship-model", help="Train a final to ship model, while excluding the uniprot id's specified by this argument.", dest="ship_model")
     parser.add_argument("--eval-pcba", action="store_true", help="Evaluate PCBA during validation")
+    parser.add_argument("--eval-dude", action="store_true", help="Evaluate DUDe during validation")
     parser.add_argument("--sigmoid-scalar", type=int, default=5, dest="sigmoid_scalar")
 
     args = parser.parse_args()
@@ -107,6 +123,7 @@ def train(
     model_size: str,
     ship_model: str,
     eval_pcba: bool,
+    eval_dude: bool,
     sigmoid_scalar: int,
 ):
     args = argparse.Namespace(
@@ -138,6 +155,7 @@ def train(
         model_size=model_size,
         ship_model=ship_model,
         eval_pcba=eval_pcba,
+        eval_dude=eval_dude,
         sigmoid_scalar=sigmoid_scalar,
     )
     config = OmegaConf.load(args.config)
@@ -323,6 +341,8 @@ def train(
             wandb_logger.experiment.config.update(OmegaConf.to_container(config, resolve=True, throw_on_missing=True))
         wandb_logger.experiment.tags = [config.task, config.experiment_id, config.target_featurizer, config.model_size]
 
+        wandb_logger.experiment.tags = [config.task, 'arxiv', config.target_featurizer]
+
     if config.task == 'merged' and args.ship_model:
         # save every epoch
         checkpoint_callback = pl.callbacks.ModelCheckpoint(
@@ -342,6 +362,8 @@ def train(
     callbacks = [checkpoint_callback]
     if args.eval_pcba:
         callbacks.append(PCBAEvaluationCallback())
+    if args.eval_dude:
+        callbacks.append(DUDeEvaluationCallback())
 
     callbacks = [checkpoint_callback]
     if args.eval_pcba:

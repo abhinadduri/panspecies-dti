@@ -1111,7 +1111,7 @@ class MergedDataset(Dataset):
         `target_db`: a reference to the LMDB database of targets that supports this dataset.
         """
         self.split = split
-        self.neg_sample_ratio = neg_sample_ratio
+        self.neg_sample_ratio = 3
 
         # Ligand ID to smiles mapping
         self.id_to_smiles = id_to_smiles
