@@ -156,8 +156,8 @@ def main():
                        help='Prefix for output files (default: merged_stats)')
     parser.add_argument('--no-histogram', action='store_true',
                        help='Skip generating histogram plot')
-    parser.add_argument('--no-kde', action='store_true',
-                       help='Skip kernel density estimate in plot')
+    parser.add_argument('--kde', action='store_true',
+                       help='Generate kernel density estimate in plot')
     
     args = parser.parse_args()
     
@@ -171,7 +171,7 @@ def main():
         args.pickle_files,
         args.output_prefix,
         plot_histogram=not args.no_histogram,
-        plot_kde=not args.no_kde
+        plot_kde=args.kde
     )
     
     return merged_stats
