@@ -11,6 +11,17 @@ from scipy.stats import gaussian_kde
 
 from compute_streaming_stats import StreamingStats
 
+def weighted_gaussian_kde(x, weights, bandwidth="scott"):
+    """
+    Weighted Gaussian KDE using scipy's gaussian_kde formula with weights.
+    """
+    # Normalize weights
+    weights = np.array(weights, dtype=float)
+    weights /= weights.sum()
+
+    # Define weighted KDE
+    kde = gaussian_kde(x, bw_method=bandwidth, weights=weights)
+    return kde
 
 def merge_stats_files(pickle_files: List[str], output_prefix: str = 'merged_stats', 
                      plot_histogram: bool = True, plot_kde: bool = True):
@@ -73,28 +84,20 @@ def generate_histogram_plot(stats: StreamingStats, output_prefix: str, plot_kde:
     
     # Add KDE if requested and data is available
     if plot_kde and stats.count > 1:
-        # Generate sample data from t-digest for KDE
-        # Use quantiles to approximate the distribution
-        quantiles = np.linspace(0.001, 0.999, 1000)
-        kde_samples = [stats.tdigest.quantile(q) for q in quantiles]
-        kde_samples = np.array(kde_samples)
-        
-        # Remove any invalid values
-        kde_samples = kde_samples[np.isfinite(kde_samples)]
-        
-        if len(kde_samples) > 10:  # Need minimum samples for KDE
-            try:
-                kde = gaussian_kde(kde_samples)
-                x_range = np.linspace(stats.min_val, stats.max_val, 1000)
-                kde_values = kde(x_range)
+        try:
+            # Build weighted KDE using scipy
+            kde = weighted_gaussian_kde(bin_centers, weights=hist_counts, bandwidth="scott")
+
+            x_range = np.linspace(stats.min_val, stats.max_val, 1000)
+            kde_values = kde(x_range)
                 
                 # Scale KDE to match histogram scale
-                kde_scale = np.max(hist_counts) / np.max(kde_values)
-                kde_values *= kde_scale
-                
-                plt.plot(x_range, kde_values, 'red', linewidth=2, label='Kernel Density Estimate')
-            except Exception as e:
-                print(f"Warning: Could not generate KDE: {e}")
+            kde_scale = np.max(hist_counts) / np.max(kde_values)
+            kde_values *= kde_scale
+            
+            plt.plot(x_range, kde_values, 'red', linewidth=2, label='Kernel Density Estimate')
+        except Exception as e:
+            print(f"Warning: Could not generate KDE: {e}")
     
     # Formatting
     plt.xlabel('Similarity Score', fontsize=12)
