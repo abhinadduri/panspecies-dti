@@ -160,7 +160,7 @@ class StreamingStats:
         self.sum_sq = 0.0
         self.min_val = float('inf')
         self.max_val = float('-inf')
-        self.histogram = StreamingHistogram(bins=histogram_bins)
+        self.histogram = StreamingHistogram(bins=histogram_bins, range_min=-1, range_max=1)
         self.tdigest = TDigest(compression=tdigest_compression)
     
     def update(self, values: np.ndarray):
@@ -275,10 +275,9 @@ def compute_streaming_stats_cli():
     parser.add_argument('--query-embeddings', type=str, required=True, help='Path to the query embeddings')
     parser.add_argument('--query-data', type=str, required=True, help='Path to the query data (csv)')
     parser.add_argument('--batch-size', type=int, default=2048, help='Batch size for the dataloader')
-    parser.add_argument('--histogram-bins', type=int, default=1000, help='Number of histogram bins')
+    parser.add_argument('--histogram-bins', type=int, default=20000, help='Number of histogram bins')
     parser.add_argument('--tdigest-compression', type=int, default=100, help='T-digest compression parameter')
     parser.add_argument('--output-prefix', type=str, default='streaming_stats', help='Prefix for output files')
-    parser.add_argument('--save-state', action='store_true', help='Save intermediate state for merging')
     parser.add_argument('--load-states', type=str, nargs='*', help='Load and merge states from these files')
     parser.add_argument('--delimiter', type=str, default=',', help='Delimiter for the csv files')
     parser.add_argument('--verbose', '-v', action='store_true', help='Print detailed progress')
@@ -291,27 +290,7 @@ def compute_streaming_stats(library_embeddings, library_data, query_embeddings, 
                           output_prefix='streaming_stats', save_state=False, load_states=None,
                           delimiter=',', verbose=False):
     
-    # Handle state loading and merging
-    if load_states:
-        print(f"Loading and merging {len(load_states)} state files...")
-        merged_stats = StreamingStats.load_state(load_states[0])
-        for state_file in load_states[1:]:
-            other_stats = StreamingStats.load_state(state_file)
-            merged_stats.merge(other_stats)
         
-        # Save merged results
-        summary = merged_stats.get_summary()
-        with open(f"{output_prefix}_merged_summary.json", 'w') as f:
-            json.dump(summary, f, indent=2)
-        
-        # Save histogram
-        hist_counts, hist_edges = merged_stats.histogram.get_histogram()
-        np.savez(f"{output_prefix}_merged_histogram.npz", 
-                counts=hist_counts, bin_edges=hist_edges)
-        
-        print("Merged statistics saved.")
-        return merged_stats
-    
     # Load data
     library_embeddings = EmbeddedDataset(library_embeddings)
     query_embeddings = np.load(query_embeddings)
@@ -350,24 +329,29 @@ def compute_streaming_stats(library_embeddings, library_data, query_embeddings, 
     # Load query data for output naming
     query_data = pd.read_csv(query_data, delimiter=delimiter)
     query_ids = query_data['uniprot_id'].values if 'uniprot_id' in query_data.columns else query_data['id'].values
+
+    merged_stats = dict()
+    # Handle state loading and merging
+    if load_states:
+        print(f"Loading {len(load_states)} state files...")
+        for state_file in load_states:
+            other_stats = StreamingStats.load_state(state_file)
+            query_id = state_file.split(output_prefix)[1].split('_state.pkl')[0].strip('_')
+            if query_id in merged_stats:
+                merged_stats[query_id].merge(other_stats)
+            else:
+                merged_stats[query_id] = other_stats
     
     # Save results for each query
     for i, (stats, query_id) in enumerate(zip(query_stats, query_ids)):
-        # Save summary statistics
-        summary = stats.get_summary()
-        with open(f"{output_prefix}_{query_id}_summary.json", 'w') as f:
-            json.dump(summary, f, indent=2)
-        
-        # Save histogram
-        hist_counts, hist_edges = stats.histogram.get_histogram()
-        np.savez(f"{output_prefix}_{query_id}_histogram.npz", 
-                counts=hist_counts, bin_edges=hist_edges)
-        
         # Save state for potential merging
-        if save_state:
-            stats.save_state(f"{output_prefix}_{query_id}_state.pkl")
+        if query_id in merged_stats:
+            print(f"Merging new {query_id} stats with loaded stats")
+            stats.merge(merged_stats[query_id])
+        stats.save_state(f"{output_prefix}_{query_id}_state.pkl")
         
         if verbose:
+            summary = stats.get_summary()
             print(f"\nQuery {query_id} statistics:")
             print(f"  Count: {summary['count']:,}")
             print(f"  Mean: {summary['mean']:.6f}")
