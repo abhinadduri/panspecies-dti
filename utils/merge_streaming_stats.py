@@ -114,7 +114,7 @@ Std: {stats.std:.4f}
 Min: {stats.min_val:.4f}
 Max: {stats.max_val:.4f}
 Median: {stats.tdigest.quantile(0.5):.4f}
-95th percentile: {stats.tdigest.quantile(0.95):.4f}"""
+99.999th percentile: {stats.tdigest.quantile(0.99999):.4f}"""
     
     plt.text(0.02, 0.98, stats_text, transform=plt.gca().transAxes, fontsize=10,
              verticalalignment='top', bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.8))
@@ -139,10 +139,10 @@ def print_summary(summary: Dict):
     print(f"Minimum:         {summary['min']:.6f}")
     print(f"Maximum:         {summary['max']:.6f}")
     print(f"Median:          {summary['median']:.6f}")
-    print(f"25th percentile: {summary['q25']:.6f}")
-    print(f"75th percentile: {summary['q75']:.6f}")
     print(f"95th percentile: {summary['q95']:.6f}")
     print(f"99th percentile: {summary['q99']:.6f}")
+    print(f"99.9th percentile: {summary['q999']:.6f}")
+    print(f"99.99th percentile: {summary['q9999']:.6f}")
     print("="*50)
 
 

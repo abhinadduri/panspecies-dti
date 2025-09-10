@@ -209,10 +209,10 @@ class StreamingStats:
             'min': self.min_val,
             'max': self.max_val,
             'median': self.tdigest.quantile(0.5),
-            'q25': self.tdigest.quantile(0.25),
-            'q75': self.tdigest.quantile(0.75),
             'q95': self.tdigest.quantile(0.95),
-            'q99': self.tdigest.quantile(0.99)
+            'q99': self.tdigest.quantile(0.99),
+            'q9999': self.tdigest.quantile(0.9999),
+            'q99999': self.tdigest.quantile(0.99999)
         }
     
     def save_state(self, filepath: str):
