@@ -752,3 +752,56 @@ class SaProtFeaturizer(Featurizer):
     @staticmethod
     def sanitize_string(s):
         return ''.join(c if c.isalnum() else '_' for c in s)
+
+
+
+# AIDOProtein2Structure Featurizer
+class AIDOProtein2StructureTokenFeaturizer(Featurizer):
+    def __init__(self, save_dir: Path = Path().absolute(),
+                 ext: str = "h5", batch_size: int = 8, **kwargs):
+        # name, feature_dim, moltype, save_dir, ext, batch_size
+        super().__init__("AIDO_P2ST16B", 2304, "target", save_dir, ext, batch_size, **kwargs)
+        from modelgenerator.tasks import Embed
+        self._max_len = 1024
+        # Load AIDO backbone and put in eval
+        self._embed = Embed.from_config({"model.backbone": "aido_protein2structoken_16b"}).eval()
+        self._register_cuda("embed", self._embed)
+
+    def _transform_single(self, seq: str) -> torch.Tensor:
+        seq = seq[: self._max_len]
+        try:
+            with torch.no_grad():
+                batch = self._embed.transform({"sequences": [seq]})
+                out = self._embed(batch)  # tensor [1, L, 2304] or list/tuple of [L, 2304]
+            feats = out[0]
+            if feats.dim() == 3:  # [1, L, 2304]
+                feats = feats.squeeze(0)
+            feats = feats[:len(seq)]
+            return feats.detach().cpu()
+        except Exception as e:
+            print(f"AIDO featurization failed len={len(seq)}: {e}")
+            return torch.zeros((len(seq), self.shape))
+
+    def _transform(self, seqs: T.List[str]) -> T.List[torch.Tensor]:
+        seqs = [s[: self._max_len] for s in seqs]
+        try:
+            with torch.no_grad():
+                batch = self._embed.transform({"sequences": seqs})
+                out = self._embed(batch)  # tensor [B, Lmax, 2304] or list/tuple length B
+
+            results: T.List[torch.Tensor] = []
+            if isinstance(out, (list, tuple)):
+                for i, s in enumerate(seqs):
+                    results.append(out[i][:len(s)].detach().cpu())
+            else:
+                # out: [B, Lmax, 2304]
+                for i, s in enumerate(seqs):
+                    results.append(out[i, :len(s)].detach().cpu())
+            return results
+
+        except RuntimeError as e:
+            if "out of memory" in str(e).lower():
+                torch.cuda.empty_cache()
+                return [self._transform_single(s) for s in seqs]
+            raise
+AIDO_P2ST16B = AIDOProtein2StructureTokenFeaturizer
