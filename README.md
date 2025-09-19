@@ -50,6 +50,27 @@ ultrafast-train --exp-id DAVIS --config configs/saprot_agg_config.yaml --model-s
 ```
 Other DTI dataset models can be reproduced by adding ``--task`` to the commandline with: ``biosnap``, ``bindingdb``, ``biosnap_prot``(Unseen Targets), ``biosnap_mol``(Unseen Drugs), or ``merged``
 
+### AIDO Protein2StructureToken Featurizer (New)
+We added support for the `AIDOProtein2StructureTokenFeaturizer` in `featurizers.py` and evaluated it in the **SPRINT (16M)** framework.  
+
+To replicate across all datasets (DAVIS, BindingDB, BIOSNAP full, BIOSNAP unseen targets, BIOSNAP unseen drugs, and MERGED) with 5 replicates each, run:
+
+```# bash
+for task in davis bindingdb biosnap biosnap_prot biosnap_mol merged; do
+  for r in 0 1 2 3 4; do
+    ultrafast-train \
+      --exp-id ${task^^}_AIDO_large_R${r} \
+      --task $task \
+      --config configs/saprot_agg_config.yaml \
+      --target-featurizer AIDO_P2ST16B \
+      --prot-proj agg \
+      --model-size large \
+      --replicate $r \
+      --epochs 20 \
+      --wandb-proj SPRINT-AIDO
+  done
+done
+
 ### Lit-PCBA
 ```
 # SPRINT
