@@ -69,7 +69,7 @@ for task in davis bindingdb biosnap biosnap_prot biosnap_mol merged; do
       --epochs 20 \
       --wandb-proj SPRINT-AIDO
   done
-done
+done ```
 
 ### Lit-PCBA
 ```
