@@ -71,8 +71,6 @@ ultrafast-train --exp-id TDC --config configs/TDC_config.yaml --target-featurize
 ultrafast-train --exp-id TDC --config configs/TDC_config.yaml --target-featurizer ESM2Featurizer
 ```
 ### AIDO Protein2StructureToken Featurizer 
-We added support for the `AIDO`and evaluated it in the **SPRINT (16M)** framework.  
-
 To replicate these experiments, you can use the helper script `sprint_aido.py` in `utils/` (automates the loop), or run directly from the command line:
 
 ```bash
