@@ -70,7 +70,25 @@ ultrafast-train --exp-id TDC --config configs/TDC_config.yaml --target-featurize
 # SPRINT-ESM2
 ultrafast-train --exp-id TDC --config configs/TDC_config.yaml --target-featurizer ESM2Featurizer
 ```
+### AIDO Protein2StructureToken Featurizer 
+To replicate these experiments, you can use the helper script `sprint_aido.py` in `utils/` (automates the loop), or run directly from the command line:
 
+```bash
+for task in davis bindingdb biosnap biosnap_prot biosnap_mol merged; do
+  for r in 0 1 2 3 4; do
+    ultrafast-train \
+      --exp-id ${task^^}_AIDO_large_R${r} \
+      --task $task \
+      --config configs/saprot_agg_config.yaml \
+      --target-featurizer AIDO_P2ST16B \
+      --prot-proj agg \
+      --model-size large \
+      --replicate $r \
+      --epochs 20 \
+      --wandb-proj SPRINT-AIDO
+  done
+done 
+```
 # Download pre-trained model
 Links to download pre-trained models used for Lit-PCBA evaluation in Table 2 are in [checkpoints/README.md](checkpoints/README.md).
 
