@@ -148,7 +148,7 @@ def train(
     num_heads_agg: int,
     model_size: str,
     ship_model: str,
-    eval_pcba: bool,
+    eval_pcba_flag: bool,  # Renamed to avoid conflict with imported function
     sigmoid_scalar: int,
     # NEW
     pcba_target: str,
@@ -184,7 +184,7 @@ def train(
         num_heads_agg=num_heads_agg,
         model_size=model_size,
         ship_model=ship_model,
-        eval_pcba=eval_pcba,
+        eval_pcba=eval_pcba_flag,  # Use renamed variable
         sigmoid_scalar=sigmoid_scalar,
         # NEW
         pcba_target=pcba_target,
@@ -193,6 +193,12 @@ def train(
     )
     cfg = OmegaConf.load(args.config)
     cfg.update({k: v for k, v in vars(args).items() if v is not None})
+
+    # Validate ship mode parameters
+    if cfg.ship_model and not cfg.pcba_target:
+        print("WARNING: ship_model is enabled but no pcba_target specified.")
+        print("This will use file-based exclusion (if ship_model is a file path) or fail.")
+        print("For single-target filtering, use: --ship-model true --pcba-target TARGET_NAME")
 
     save_dir = f'{cfg.get("model_save_dir", ".")}/{cfg.experiment_id}'
 
@@ -264,22 +270,23 @@ def train(
             datamodule = TDCDataModule(**task_dm_kwargs)
         elif cfg.task in EnzPredDataModule.dataset_list():
             raise RuntimeError("EnzPredDataModule not implemented yet")
+        elif cfg.task == "merged":
+            # For merged task with new single-target filtering
+            datamodule = MergedDataModule(
+                **task_dm_kwargs,
+                ship_model=cfg.ship_model,
+                ship_model_target=cfg.pcba_target,  # Direct access after config merge
+                ship_sim_threshold=cfg.ship_sim_threshold,
+                pcba_dir=cfg.pcba_dir,
+            )
         else:
             datamodule = DTIDataModule(**task_dm_kwargs)
 
-    # For merged task, override datamodule and pass new fields
+    # Only call prepare_data/setup for non-merged tasks
+    # MergedDataModule handles its own setup
     if cfg.task != "merged":
         datamodule.prepare_data()
-    else:
-        datamodule = MergedDataModule(
-            **task_dm_kwargs,
-            ship_model=cfg.ship_model,
-            # NEW: hook points for dynamic single-target filtering (MMSeqs2 in your DM)
-            ship_model_target=cfg.pcba_target,
-            ship_sim_threshold=cfg.ship_sim_threshold,
-            pcba_dir=cfg.pcba_dir,
-        )
-    datamodule.setup()
+        datamodule.setup()
 
     # -------- Model (single, de-duped) -------- #
     ckpt_path = cfg.get("checkpoint", None)
@@ -379,34 +386,47 @@ def train(
     # -------- Fit/Test -------- #
     if cfg.ship_model:
         trainer.fit(model, datamodule=datamodule)
-        trainer.test(datamodule=datamodule, ckpt_path=checkpoint_callback.best_model_path)
+
+        # Use best checkpoint if available; otherwise current weights
+        test_ckpt = checkpoint_callback.best_model_path or None
+        trainer.test(datamodule=datamodule, ckpt_path=test_ckpt)
         trainer.save_checkpoint(f"{save_dir}/ship_model.ckpt")
 
         # Automatically evaluate best checkpoint on Lit-PCBA
-        if cfg.eval_pcba and checkpoint_callback.best_model_path:
-            print(f"\nEvaluating best checkpoint on Lit-PCBA: {checkpoint_callback.best_model_path}\n")
-            model = model.__class__.load_from_checkpoint(checkpoint_callback.best_model_path)
+        if cfg.eval_pcba:
+            eval_ckpt = checkpoint_callback.best_model_path or None
+            if eval_ckpt:
+                print(f"\nEvaluating best checkpoint on Lit-PCBA: {eval_ckpt}\n")
+                model_eval = model.__class__.load_from_checkpoint(eval_ckpt)
+            else:
+                print("\nEvaluating current weights on Lit-PCBA (no best checkpoint found)\n")
+                model_eval = model
             eval_pcba(
                 trainer,
-                model,
+                model_eval,
                 pcba_dir=cfg.pcba_dir,
-                target_name=cfg.pcba_target,
+                target_name=cfg.pcba_target,  # Direct access after config merge
             )
 
     else:
         trainer.fit(model, datamodule=datamodule)
-        final_ckpt = cfg.get("checkpoint", None) if cfg.epochs == 0 else checkpoint_callback.best_model_path
+        final_ckpt = cfg.get("checkpoint", None) if cfg.epochs == 0 else (checkpoint_callback.best_model_path or None)
         trainer.test(datamodule=datamodule, ckpt_path=final_ckpt)
 
         # Automatically evaluate best checkpoint on Lit-PCBA
-        if cfg.eval_pcba and checkpoint_callback.best_model_path:
-            print(f"\nEvaluating best checkpoint on Lit-PCBA: {checkpoint_callback.best_model_path}\n")
-            model = model.__class__.load_from_checkpoint(checkpoint_callback.best_model_path)
+        if cfg.eval_pcba:
+            eval_ckpt = checkpoint_callback.best_model_path or None
+            if eval_ckpt:
+                print(f"\nEvaluating best checkpoint on Lit-PCBA: {eval_ckpt}\n")
+                model_eval = model.__class__.load_from_checkpoint(eval_ckpt)
+            else:
+                print("\nEvaluating current weights on Lit-PCBA (no best checkpoint found)\n")
+                model_eval = model
             eval_pcba(
                 trainer,
-                model,
+                model_eval,
                 pcba_dir=cfg.pcba_dir,
-                target_name=cfg.pcba_target,
+                target_name=cfg.pcba_target,  # Direct access after config merge
             )
 
 

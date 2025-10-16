@@ -84,6 +84,8 @@ def eval_pcba(trainer, model, pcba_dir: str = "data/lit_pcba", target_name: Opti
     all_targets, all_aurocs, all_bedrocs = [], [], []
     all_efs = {0.005: [], 0.01: [], 0.05: []}
 
+    single_target_mode = target_name is not None
+
     for target_folder in target_folders:
         target = os.path.basename(target_folder)
         out_dir = os.path.join(pcba_dir, target)
@@ -190,26 +192,35 @@ def eval_pcba(trainer, model, pcba_dir: str = "data/lit_pcba", target_name: Opti
                 step=trainer.global_step,
             )
 
-    # Averages
-    avg_auroc = float(np.mean(all_aurocs)) if all_aurocs else float("nan")
-    avg_bedroc = float(np.mean(all_bedrocs)) if all_bedrocs else float("nan")
-    avg_efs = {k: float(np.mean(v)) if v else float("nan") for k, v in all_efs.items()}
+    # Only calculate and log averages if we evaluated multiple targets
+    if not single_target_mode:
+        avg_auroc = float(np.mean(all_aurocs)) if all_aurocs else float("nan")
+        avg_bedroc = float(np.mean(all_bedrocs)) if all_bedrocs else float("nan")
+        avg_efs = {k: float(np.mean(v)) if v else float("nan") for k, v in all_efs.items()}
 
-    if trainer.logger:
-        trainer.logger.experiment.log(
-            {
-                "pcba/avg_AUROC": avg_auroc,
-                "pcba/avg_BEDROC_85": avg_bedroc,
-                "pcba/avg_EF_0.005": avg_efs[0.005],
-                "pcba/avg_EF_0.01": avg_efs[0.01],
-                "pcba/avg_EF_0.05": avg_efs[0.05],
-            },
-            step=trainer.global_step,
-        )
+        if trainer.logger:
+            trainer.logger.experiment.log(
+                {
+                    "pcba/avg_AUROC": avg_auroc,
+                    "pcba/avg_BEDROC_85": avg_bedroc,
+                    "pcba/avg_EF_0.005": avg_efs[0.005],
+                    "pcba/avg_EF_0.01": avg_efs[0.01],
+                    "pcba/avg_EF_0.05": avg_efs[0.05],
+                },
+                step=trainer.global_step,
+            )
 
-    print(f"Average EF: {avg_efs}")
-    print(f"Average BEDROC_85: {avg_bedroc:.3f}")
-    print(f"Average AUROC: {avg_auroc:.3f}")
+        print(f"Average EF: {avg_efs}")
+        print(f"Average BEDROC_85: {avg_bedroc:.3f}")
+        print(f"Average AUROC: {avg_auroc:.3f}")
+    else:
+        avg_auroc = all_aurocs[0] if all_aurocs else float("nan")
+        avg_bedroc = all_bedrocs[0] if all_bedrocs else float("nan")
+        avg_efs = {k: v[0] if v else float("nan") for k, v in all_efs.items()}
+
+        print(f"Single target {target_name} EF: {avg_efs}")
+        print(f"Single target {target_name} BEDROC_85: {avg_bedroc:.3f}")
+        print(f"Single target {target_name} AUROC: {avg_auroc:.3f}")
 
     return {
         "targets": all_targets,

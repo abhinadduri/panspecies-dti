@@ -47,7 +47,7 @@ def get_task_dir(task_name: str):
         "bkace": "./data/EnzPred/duf_binary",
         "gt": "./data/EnzPred/gt_acceptors_achiral_binary",
         "esterase": "./data/EnzPred/esterase_binary",
-        "kinase": "./data/EnzPred/davis_filtered",
+        "kinase": "./data/EnzPred/kinase_chiral_binary",
         "phosphatase": "./data/EnzPred/phosphatase_chiral_binary",
         "merged": "./data/MERGED/huge_data",
         "custom": "./data/custom/",
@@ -1249,7 +1249,7 @@ class MergedDataModule(pl.LightningDataModule):
         data_dir: str,
         drug_featurizer: Featurizer,
         target_featurizer: Featurizer,
-        device: torch.device("cuda"),
+        device: torch.device = torch.device("cuda"),
         batch_size: int = 32,
         shuffle: bool = True,
         num_workers: int = 17,
@@ -1274,10 +1274,14 @@ class MergedDataModule(pl.LightningDataModule):
 
         self.drug_featurizer = drug_featurizer
         self.target_featurizer = target_featurizer
-        self.ship_model = ship_model  # kept for backward-compat (file-based exclusion list)
-        self.ship_model_target = ship_model_target  # Lit-PCBA target name (e.g., "PPARG")
-        self.ship_sim_threshold = ship_sim_threshold  # MMseqs2 min_seq_id (0..1)
+        self.ship_model = ship_model
+        self.ship_model_target = ship_model_target
+        self.ship_sim_threshold = ship_sim_threshold
         self.pcba_dir = pcba_dir
+
+        # Validate parameters
+        if self.ship_model and self.ship_model_target is None:
+            raise ValueError("ship_model_target must be specified when ship_model is True")
 
         # Load in the ID to SMILES and ID to target sequence files
         self.id_to_smiles = np.load('data/MERGED/huge_data/id_to_smiles.npy', allow_pickle=True).item()
@@ -1309,77 +1313,95 @@ class MergedDataModule(pl.LightningDataModule):
 
     # ----- Helpers for MMseqs2-based exclusion using Lit-PCBA sequence dicts -----
 
-    def _to_plain_aa(self, s: str) -> str:
-        # keep only uppercase amino acid letters
-        return "".join(ch for ch in s if "A" <= ch <= "Z")
-
-    def _load_pcba_target_sequences(self, target_name: str) -> List[str]:
+    def _load_pcba_target_sequences(self, target_name: str) -> dict:
         """
-        Loads Lit-PCBA sequences for a given target from either:
-          - saprot_sequence_dict.json   (if featurizer is SaProt)
-          - lit_pcba_sequence_dict.json (otherwise)
+        Load sequences for a SINGLE Lit-PCBA target only.
+        Returns dict with sequential IDs for MMseqs2, matching original pipeline.
         """
         seq_file = "saprot_sequence_dict.json" if self.target_featurizer.name == "SaProt" \
                    else "lit_pcba_sequence_dict.json"
         path = os.path.join(self.pcba_dir, seq_file)
         if not os.path.isfile(path):
-            raise FileNotFoundError(
-                f"Missing Lit-PCBA sequence dictionary at {path}. "
-                f"(Expected {seq_file} under {self.pcba_dir})"
-            )
-        seqs = json.load(open(path))
-        if target_name not in seqs:
-            raise KeyError(f"Target '{target_name}' not found in {seq_file}")
-        return [self._to_plain_aa(x) for x in seqs[target_name]]
+            raise FileNotFoundError(f"Missing Lit-PCBA sequence dictionary at {path}")
+        
+        target_sets = json.load(open(path))
+        
+        if target_name not in target_sets:
+            raise KeyError(f"Target '{target_name}' not found in sequence dictionary")
+            
+        # Replicate original pipeline's sequence aggregation for this single target
+        pcba_sequences = {}
+        for idx, seq in enumerate(target_sets[target_name]):
+            pcba_sequences[str(idx)] = seq  # Use sequence as-is, no filtering
+            
+        print(f"[MergedDataModule] Loaded {len(pcba_sequences)} sequences from single target: {target_name}")
+        return pcba_sequences
 
-    def _iter_merged_plain_sequences(self):
+    def _iter_merged_sequences(self):
+        """Iterate through merged dataset sequences without filtering"""
         for uid, seq in self.id_to_target.items():
-            yield uid, self._to_plain_aa(seq)
+            yield uid, seq  # Use sequence as-is, no filtering
 
     def _build_exclusion_with_mmseqs(self, eval_target_name: str, min_seq_id: float) -> Set[str]:
         """
-        Builds an exclusion set of UniProt IDs from the merged corpus that are >= min_seq_id
-        similar to the Lit-PCBA sequences for the given target.
-        Requires MMseqs2 ('mmseqs' in PATH).
+        Builds exclusion set using the EXACT same MMseqs2 workflow as original pipeline.
         """
-        eval_seqs = self._load_pcba_target_sequences(eval_target_name)
+        print(f"[MergedDataModule] Building exclusion set for target '{eval_target_name}' "
+              f"with similarity threshold {min_seq_id:.1%}")
+
+        # Load ONLY the sequences from the specific evaluation target
+        pcba_sequences = self._load_pcba_target_sequences(eval_target_name)
+
         with tempfile.TemporaryDirectory() as tmpd:
-            q_fa = os.path.join(tmpd, "query.fasta")
-            s_fa = os.path.join(tmpd, "subject.fasta")
-            out_tsv = os.path.join(tmpd, "out.m8")
-            tmp_mm = os.path.join(tmpd, "tmp")
+            # Write FASTA files matching original pipeline format
+            query_fasta = os.path.join(tmpd, "train_seqs.fasta")  # MERGED dataset (subject)
+            target_fasta = os.path.join(tmpd, "lit_pcba.fasta")   # Single Lit-PCBA target (query)
+            output_tsv = os.path.join(tmpd, "similar_sequences.tsv")
+            
+            # Write training sequences (MERGED dataset) - these are what we're filtering FROM
+            with open(query_fasta, "w") as f:
+                for uid, seq in self._iter_merged_sequences():
+                    f.write(f">{uid}\n{seq}\n")
 
-            with open(q_fa, "w") as fq:
-                for i, s in enumerate(eval_seqs):
-                    fq.write(f">Q{i}\n{s}\n")
+            # Write Lit-PCBA sequences (single target) - these are what we're filtering AGAINST
+            with open(target_fasta, "w") as f:
+                for seq_id, seq in pcba_sequences.items():
+                    f.write(f">{seq_id}\n{seq}\n")
 
-            with open(s_fa, "w") as fs:
-                for uid, s in self._iter_merged_plain_sequences():
-                    fs.write(f">{uid}\n{s}\n")
-
-            cmd = [
-                "mmseqs", "easy-search",
-                q_fa, s_fa, out_tsv, tmp_mm,
-                "--min-seq-id", str(min_seq_id),
-                "--format-output", "query,target,pident",
+            # Run MMseqs2 using the EXACT same commands as original pipeline
+            commands = [
+                f"mmseqs createdb {query_fasta} {tmpd}/queryDB",
+                f"mmseqs createdb {target_fasta} {tmpd}/targetDB", 
+                f"mmseqs search {tmpd}/queryDB {tmpd}/targetDB {tmpd}/resultDB {tmpd} -s 7.5 --max-seqs 10000 --min-seq-id {min_seq_id}",
+                f"mmseqs convertalis {tmpd}/queryDB {tmpd}/targetDB {tmpd}/resultDB {output_tsv}"
             ]
+            
             try:
-                subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                for cmd in commands:
+                    print(f"[MergedDataModule] Running: {cmd}")
+                    result = subprocess.run(cmd, shell=True, check=True, 
+                                          stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                    if result.returncode != 0:
+                        raise subprocess.CalledProcessError(result.returncode, cmd)
+                        
             except FileNotFoundError:
                 raise RuntimeError("MMSeqs2 not found on PATH")
             except subprocess.CalledProcessError as e:
-                raise RuntimeError(f"MMSeqs2 failed with code {e.returncode}. Stderr:\n{e.stderr.decode('utf-8', errors='ignore')}")
+                raise RuntimeError(f"MMSeqs2 failed: {e.stderr.decode('utf-8', errors='ignore')}")
 
+            # Process results - these are the sequences to EXCLUDE from training
             hits: Set[str] = set()
-            if os.path.exists(out_tsv):
-                with open(out_tsv) as f:
+            if os.path.exists(output_tsv):
+                with open(output_tsv) as f:
                     for line in f:
                         parts = line.strip().split("\t")
-                        if len(parts) < 3:
+                        if len(parts) < 1:
                             continue
-                        target_uid, pident = parts[1], float(parts[2])
-                        if pident >= min_seq_id * 100.0:
-                            hits.add(target_uid)
+                        # The first column is the sequence ID from our MERGED dataset that matches the Lit-PCBA target
+                        merged_sequence_id = parts[0]
+                        hits.add(merged_sequence_id)
+            
+            print(f"[MergedDataModule] Found {len(hits)} sequences in MERGED dataset ≥{min_seq_id:.1%} similar to {eval_target_name}")
             return hits
 
     # ---------------------------------------------------------------------------
@@ -1393,7 +1415,7 @@ class MergedDataModule(pl.LightningDataModule):
         self.drug_featurizer.process_merged_drugs(self.id_to_smiles)
         self.target_featurizer.process_merged_targets(self.id_to_target)
 
-        self.drug_db = px.Reader(dirpath=smiles_lmdb, lock=False)  # we only read
+        self.drug_db = px.Reader(dirpath=smiles_lmdb, lock=False)
         self.target_db = px.Reader(dirpath=target_lmdb, lock=False)
 
         tdim = self.target_featurizer.shape
@@ -1410,7 +1432,7 @@ class MergedDataModule(pl.LightningDataModule):
                 )
             # Back-compat: if ship_model points to a file of IDs, use that too
             elif isinstance(self.ship_model, str) and os.path.isfile(self.ship_model):
-                exclusion_ids = None  # we'll pass exclusion_file to dataset below
+                exclusion_ids = None
 
             self.data_all = MergedDataset(
                 'all', self.drug_db, self.target_db, self.id_to_smiles, self.id_to_target,
