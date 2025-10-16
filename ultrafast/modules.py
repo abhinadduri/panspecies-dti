@@ -110,6 +110,15 @@ class Learned_Aggregation_Layer(nn.Module):
         self.proj = nn.Linear(dim, dim)
         self.proj_drop = nn.Dropout(proj_drop)
 
+        # adding explicit bias to attn to try to alleviate spiky attn
+        # https://arxiv.org/abs/2402.17762
+        self.k_bias = nn.Parameter(torch.zeros(1, self.num_heads, 1, head_dim), requires_grad=True)
+        self.v_bias = nn.Parameter(torch.zeros(1, self.num_heads, 1, head_dim), requires_grad=True)
+
+        nn.init.normal_(self.k_bias, mean=0.0, std=0.02)
+        nn.init.normal_(self.v_bias, mean=0.0, std=0.02)
+
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         if x.dim() == 2:
             x = x.unsqueeze(0)
@@ -120,6 +129,13 @@ class Learned_Aggregation_Layer(nn.Module):
 
         q = q * self.scale
         v = self.v(x).reshape(B, N, self.num_heads, C // self.num_heads).permute(0, 2, 1, 3)
+
+        # concatenating the bias terms with the key and value
+        k_bias = self.k_bias.repeat(B, 1, 1, 1)
+        v_bias = self.v_bias.repeat(B, 1, 1, 1)
+
+        k = torch.cat((k_bias, k), dim=2)
+        v = torch.cat((v_bias, v), dim=2)
 
         attn = q @ k.transpose(-2, -1)
         attn = self.id(attn)
