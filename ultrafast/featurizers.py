@@ -475,6 +475,16 @@ class MorganFeaturizer(Featurizer):
             ]
             return torch.stack(all_feats, dim=0)
 
+class MoLFormerFeaturizer(Featurizer):
+    def __init__(self, shape: int = 768, save_dir: Path = Path().absolute(), ext: str = "lmdb", batch_size: int = 32, n_jobs=-1):
+        super().__init__("MoLFormer", shape, "drug", save_dir, ext, batch_size)
+
+    def _transform_single(self, smile: str) -> torch.Tensor:
+        raise NotImplementedError("Precompute the lmdb for the MoLFormer embeddings")
+
+    def _transform(self, batch_smiles: List[str]) -> torch.Tensor:
+        raise NotImplementedError("Precompute the lmdb for the MoLFormer embeddings")
+
 class ProtBertFeaturizer(Featurizer):
     def __init__(self, save_dir: Path = Path().absolute(), per_tok=False, **kwargs):
         super().__init__("ProtBert", 1024, "target", save_dir, **kwargs)
