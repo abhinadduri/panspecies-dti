@@ -14,7 +14,7 @@ import pyxis as px
 import pandas as pd
 
 from functools import partial
-from molfeat.trans.pretrained.hf_transformers import PretrainedHFTransformer
+# from molfeat.trans.pretrained.hf_transformers import PretrainedHFTransformer
 from pathlib import Path
 from tqdm import tqdm
 from transformers import AutoTokenizer, AutoModel, pipeline
@@ -222,16 +222,16 @@ class Featurizer:
         Individual featurizers are able to process `batch_size` number of elements at once, so provide this size.
         """
 
-        lmdb_path = 'data/MERGED/huge_data/smiles.lmdb'
-        if os.path.exists(lmdb_path):
-            print(f"File {lmdb_path} exists, skipping processing smiles.")
+        # lmdb_path = 'data/MERGED/huge_data/{self.name}_features.lmdb'
+        if os.path.exists(self._save_path):
+            print(f"File {self._save_path} exists, skipping processing smiles.")
             return
 
         # Sort the IDs to ensure ascending order
         sorted_ids = sorted(id_to_smiles.keys())
 
         # Open LMDB environment, give it 5GB just in case.
-        db = px.Writer(dirpath=lmdb_path, map_size_limit=50000, ram_gb_limit=10)
+        db = px.Writer(dirpath=self._save_path, map_size_limit=50000, ram_gb_limit=10)
 
         # For each batch of 2048 id's, featurize them, e.g., call self.transform on a list of sequences
         batch_size = 2048 * 8
@@ -288,7 +288,7 @@ class Featurizer:
         """
         assert self.path.suffix == '.lmdb', "This function is only for LMDB files"
         if os.path.exists(self._save_path):
-            print(f"File {self._save_path} exists, skipping processing smiles.")
+            print(f"File {self._save_path} exists, skipping processing {self._name}.")
             return
 
         if self.moltype == "target":
@@ -374,49 +374,54 @@ class Featurizer:
         if hasattr(self, 'db') and self.db is not None:
             self.db.close()
 
-class ChemGPTFeaturizer(Featurizer):
-    def __init__(self, shape: int = 768, save_dir: Path = Path().absolute(), ext: str = "h5", batch_size: int = 32, n_jobs=-1):
-        super().__init__("RoBertaZinc", shape, "drug", save_dir, ext, batch_size)
-        self.transformer = PretrainedHFTransformer(kind='Roberta-Zinc480M-102M', notation='selfies', dtype=float, device=self._device)
+class ChemBERTaFeaturizer(Featurizer):
+    def __init__(self, shape: int = 768, save_dir: Path = Path().absolute(), ext: str = "lmdb", batch_size: int = 32, n_jobs=-1):
+        super().__init__("ChemBERTa", shape, "drug", save_dir, ext, batch_size)
+        self._device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
+        # self._device = torch.device("cpu")
+        self._tokenizer = AutoTokenizer.from_pretrained(
+            "DeepChem/ChemBERTa-100M-MLM",
+            cache_dir=f"models/huggingface/transformers",
+        )
+        self.model = AutoModel.from_pretrained(
+            "DeepChem/ChemBERTa-77M-MTR",
+            cache_dir=f"models/huggingface/transformers",
+            device_map = self._device
+        )
+        
+        self.model = self.model.to(self._device)
+        self.model.eval()
 
     def _transform_single(self, smile: str) -> torch.Tensor:
         try:
-            mol = dm.to_mol(smile)
-            if mol is None:
-                raise ValueError(f"Invalid SMILES: {smile}")
-            features = self.transformer([smile])
-            return torch.from_numpy(features[0]).float()
+            ids = self._tokenizer(smile, return_tensors="pt")
+            input_ids = torch.tensor(ids['input_ids']).to(self._device)
+
+            embeddings = self.model(input_ids=input_ids, output_hidden_states=True)#, attention_mask=attention_mask)
+            embeddings = embeddings.hidden_states[-1].detach().cpu()
+
+            return embeddings.squeeze()
         except Exception as e:
-            print(f"Error featurizing SMILES {smile}: {e}")
-            return torch.zeros(self.shape)
+            print(f"Error featurizing single SMILES: {smile}")
+            print(e)
+            return torch.zeros((len(smile), self.shape)) # zero vector for each token
 
     def _transform(self, batch_smiles: List[str]) -> torch.Tensor:
-        try:
-            mols = [dm.to_mol(smile) for smile in batch_smiles]
-            invalid_indices = [i for i, mol in enumerate(mols) if mol is None]
-            
-            if invalid_indices:
-                print(f"Invalid SMILES at indices: {invalid_indices}")
-                for idx in invalid_indices:
-                    mols[idx] = dm.to_mol("")  # Empty molecule as placeholder
-            
-            features = self.transformer(batch_smiles)
-            features = torch.from_numpy(features).float()
-            
-            # Replace features for invalid SMILES with zero vectors
-            for idx in invalid_indices:
-                features[idx] = torch.zeros(self.shape)
-            
-            return features
-        except RuntimeError as e:
-            if "CUDA out of memory" in str(e):
-                print("CUDA out of memory during batch processing. Falling back to sequential processing.")
-                return torch.stack([self._transform_single(smile) for smile in batch_smiles])
-            else:
-                raise e
-        except Exception as e:
-            print(f"Error during batch featurization: {e}")
-            return torch.stack([self._transform_single(smile) for smile in batch_smiles])
+        # results = []
+        # ids = self._tokenizer(batch_smiles, return_tensors="pt", padding=True)
+        # input_ids = torch.tensor(ids["input_ids"]).to(self._device)
+        # attn_mask = torch.tensor(ids["attention_mask"]).to(self._device)
+        # print(input_ids.shape)
+        # print(attn_mask.shape)
+
+        # with torch.no_grad():
+        #     results = self.model(input_ids, attention_mask=attn_mask)
+        # embeddings = results.hidden_states[-1].detach().cpu()
+        # print(embeddings.shape)
+
+        # torch.cuda.empty_cache()  # Clear GPU cache after processing
+        results = [self._transform_single(smile) for smile in batch_smiles]
+        return results
 
 class MorganFeaturizer(Featurizer):
     def __init__(
@@ -475,9 +480,21 @@ class MorganFeaturizer(Featurizer):
             ]
             return torch.stack(all_feats, dim=0)
 
+# using the average of the embeddings like the paper does
 class MoLFormerFeaturizer(Featurizer):
     def __init__(self, shape: int = 768, save_dir: Path = Path().absolute(), ext: str = "lmdb", batch_size: int = 32, n_jobs=-1):
         super().__init__("MoLFormer", shape, "drug", save_dir, ext, batch_size)
+
+    def _transform_single(self, smile: str) -> torch.Tensor:
+        raise NotImplementedError("Precompute the lmdb for the MoLFormer embeddings")
+
+    def _transform(self, batch_smiles: List[str]) -> torch.Tensor:
+        raise NotImplementedError("Precompute the lmdb for the MoLFormer embeddings")
+
+# use the output sequence with a learned agg function
+class MoLFormerSeqFeaturizer(Featurizer):
+    def __init__(self, shape: int = 768, save_dir: Path = Path().absolute(), ext: str = "lmdb", batch_size: int = 32, n_jobs=-1):
+        super().__init__("MoLFormerSeq", shape, "drug", save_dir, ext, batch_size)
 
     def _transform_single(self, smile: str) -> torch.Tensor:
         raise NotImplementedError("Precompute the lmdb for the MoLFormer embeddings")
