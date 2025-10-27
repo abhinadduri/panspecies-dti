@@ -418,6 +418,55 @@ class ChemGPTFeaturizer(Featurizer):
             print(f"Error during batch featurization: {e}")
             return torch.stack([self._transform_single(smile) for smile in batch_smiles])
 
+class SMI_TEDFeaturizer(Featurizer):
+    def __init__(self, shape: int = 768, save_dir: Path = Path().absolute(), ext: str = "lmdb", batch_size= 32, n_jobs=-1):
+        super().__init__("SMITED", shape, "drug", save_dir, ext, batch_size)
+        # self._device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
+        # self.model = AutoModel.from_pretrained("ibm-research/materials.smi-ted", trust_remote_code=True, cache_dir=f"models/huggingface/transformers")
+        # self._tokenizer = AutoTokenizer.from_pretrained("ibm-research/materials.smi-ted", trust_remote_code=True, cache_dir=f"models/huggingface/transformers")
+        # self.model = self.model.to(self._device)
+        # self.model.eval()
+
+    def _transform_single(self, seq: str) -> torch.Tensor:
+        # Truncate sequence if necessary
+        try:
+            ids = self._tokenizer(seq, return_tensors="pt")
+            input_ids = torch.tensor(ids['input_ids']).to(self._device)
+
+            embeddings = self.model(input_ids=input_ids, output_hidden_states=True)#, attention_mask=attention_mask)
+            embeddings = embeddings.hidden_states[-1].detach().cpu()
+
+            seq_len = len(seq)
+            start_idx = 1
+            end_idx = seq_len + 1
+            return embeddings.squeeze()[start_idx:end_idx]
+        except Exception as e:
+            print(f"Error featurizing single sequence: {seq}")
+            print(e)
+            return torch.zeros((len(seq), self.shape)) # zero vector for each token
+
+    def _transform(self, seqs: List[str]) -> List[torch.Tensor]:
+        breakpoint()
+        ids = self._tokenizer(seqs, padding=True, return_tensors="pt")
+        input_ids = torch.tensor(ids['input_ids']).to(self._device)
+        attention_mask = torch.tensor(ids['attention_mask']).to(self._device)
+
+        embeddings = self.model(input_ids=input_ids, attention_mask=attention_mask)
+        embeddings = embeddings.last_hidden_state.detach().cpu()
+
+        results = []
+        for i, seq in enumerate(seqs):
+            seq_len = len(attention_mask[i,:])
+            start_idx = 1
+            end_idx = seq_len + 1
+            feats = embeddings[i].squeeze()[start_idx:end_idx]
+            feats = feats.sum(dim=0) / seq_len
+            
+            results.append(feats)
+        torch.cuda.empty_cache()  # Clear GPU cache after processing
+        return results
+
+
 class MorganFeaturizer(Featurizer):
     def __init__(
         self,
