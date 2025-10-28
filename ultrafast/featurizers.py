@@ -68,7 +68,7 @@ class Featurizer:
             self._map_size = kwargs['map_size']
 
     def __call__(self, seq: str) -> torch.Tensor:
-        if self.ext == '.lmdb' and self.db is not None:
+        if self.ext == 'lmdb' and self.db is not None:
             assert self.id_to_idx is not None, "LMDB database must be preloaded to use this function"
             hashed_seq = hashlib.md5(seq.encode()).hexdigest()
             item = self.db[self.id_to_idx[hashed_seq]]
@@ -137,6 +137,9 @@ class Featurizer:
     @property
     def device(self) -> torch.device:
         return self._device
+
+    def pathexists(self) -> bool:
+        return self._save_path.exists()
 
     def to(self, device: torch.device) -> Featurizer:
         self._update_device(device)
@@ -501,6 +504,36 @@ class MoLFormerSeqFeaturizer(Featurizer):
 
     def _transform(self, batch_smiles: List[str]) -> torch.Tensor:
         raise NotImplementedError("Precompute the lmdb for the MoLFormer embeddings")
+
+class MoLFormerMorganFeaturizer(Featurizer):
+    def __init__(self, shape: int = (768 + 2048), save_dir: Path = Path().absolute(), ext: str = "lmdb", batch_size: int = 32, n_jobs = -1):
+        super().__init__("MoLFormerMorganFeaturizer", shape, "drug", save_dir, ext, batch_size)
+        self.molformer = None
+        self.morgan = None
+
+    def _transform_single(self, smile: str) -> torch.Tensor:
+        self.indiv_featurizers()
+        molf = self.molformer.__call__(smile)
+        morg = self.morgan.__call__(smile)
+
+        return torch.cat([molf,morg], dim=0)
+
+    def _transform(self, batch_smiles: List[str]) -> torch.Tensor:
+        self.indiv_featurizers()
+        embeddings = []
+        for smile in batch_smiles:
+            molf = self.molformer.__call__(smile)
+            morg = self.morgan.__call__(smile)
+            embeddings.append(torch.cat([molf,morg],dim=0))
+        return torch.stack(embeddings)
+
+    def indiv_featurizers(self):
+        if self.molformer is None:
+            self.molformer = MoLFormerFeaturizer(save_dir=self._save_path.parent, ext=self.ext)
+            self.molformer.preload([])
+        if self.morgan is None:
+            self.morgan = MorganFeaturizer(save_dir=self._save_path.parent, ext=self.ext)
+            self.morgan.preload([])
 
 class ProtBertFeaturizer(Featurizer):
     def __init__(self, save_dir: Path = Path().absolute(), per_tok=False, **kwargs):

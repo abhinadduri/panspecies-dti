@@ -95,6 +95,26 @@ def drug_target_collate_fn(args: T.Tuple[torch.Tensor, torch.Tensor, torch.Tenso
 
     return drugs, targets, labels
 
+def two_sequence_collate_fn(args: T.Tuple[torch.Tensor, torch.Tensor, torch.Tensor]):
+    """
+    Collate function for PyTorch data loader -- turn a batch of triplets into a triplet of batches
+    used when the molecule is a variable length embedding (i.e. 'Seq' in name)
+
+    :param args: Batch of training samples with molecule, protein, and affinity
+    :type args: Iterable[Tuple[torch.Tensor, torch.Tensor, torch.Tensor]]
+    :return: Create a batch of examples
+    :rtype: T.Tuple[torch.Tensor, torch.Tensor, torch.Tensor]
+    """
+    d_emb = [a[0] for a in args]
+    t_emb = [a[1] for a in args]
+    labs = [a[2] for a in args]
+
+    drugs = pad_sequence(d_emb, batch_first=True)
+    targets = pad_sequence(t_emb, batch_first=True)
+    labels = torch.stack(labs, 0)
+
+    return drugs, targets, labels
+
 def contrastive_collate_fn(args: T.Tuple[torch.Tensor, torch.Tensor, torch.Tensor]):
     """
     Collate function for PyTorch data loader -- turn a batch of triplets into a triplet of batches
@@ -321,7 +341,7 @@ class DTIDataModule(pl.LightningDataModule):
             "batch_size": batch_size,
             "shuffle": shuffle,
             "num_workers": num_workers,
-            "collate_fn": drug_target_collate_fn,
+            "collate_fn": two_sequence_collate_fn if 'Seq' in drug_featurizer._name else drug_target_collate_fn
         }
 
         self._csv_kwargs = {
@@ -344,10 +364,10 @@ class DTIDataModule(pl.LightningDataModule):
         self.drug_featurizer = drug_featurizer
         self.target_featurizer = target_featurizer
 
-        self.drug_featurizer.ext = ".lmdb"
-        self.target_featurizer.ext = ".lmdb"
-        self.drug_featurizer._save_path = self.drug_featurizer.path.with_suffix(self.drug_featurizer.ext)
-        self.target_featurizer._save_path = self.target_featurizer.path.with_suffix(self.target_featurizer.ext)
+        self.drug_featurizer.ext = "lmdb"
+        self.target_featurizer.ext = "lmdb"
+        self.drug_featurizer._save_path = self.drug_featurizer.path.with_suffix(f".{self.drug_featurizer.ext}")
+        self.target_featurizer._save_path = self.target_featurizer.path.with_suffix(f".{self.target_featurizer.ext}")
         if self.target_featurizer.name == "SaProt":
             self._train_path = Path("train_foldseek.csv")
             self._val_path = Path("val_foldseek.csv")
@@ -361,7 +381,7 @@ class DTIDataModule(pl.LightningDataModule):
         """
 
         print(f"drug feat path: {self.drug_featurizer.path}\ntarget path:{self.target_featurizer.path}")
-        if self.drug_featurizer.path.exists() and self.target_featurizer.path.exists():
+        if self.drug_featurizer.pathexists() and self.target_featurizer.pathexists():
             print("Drug and target featurizers already exist")
             return
 
@@ -380,10 +400,10 @@ class DTIDataModule(pl.LightningDataModule):
             self.drug_featurizer.cuda(self._device)
             self.target_featurizer.cuda(self._device)
 
-        if not self.drug_featurizer.path.exists():
+        if not self.drug_featurizer.pathexists():
             self.drug_featurizer.write_to_disk(all_drugs, file_path=self.drug_featurizer.path)
 
-        if not self.target_featurizer.path.exists():
+        if not self.target_featurizer.pathexists():
             self.target_featurizer.write_to_disk(all_targets, file_path=self.target_featurizer.path)
 
         self.drug_featurizer.cpu()
@@ -497,10 +517,10 @@ class TDCDataModule(pl.LightningDataModule):
             self._target_column = "Target Structure"
             self.target_struc_dict = None
 
-        self.drug_featurizer.ext = ".lmdb"
-        self.target_featurizer.ext = ".lmdb"
-        self.drug_featurizer._save_path = self.drug_featurizer.path.with_suffix(self.drug_featurizer.ext)
-        self.target_featurizer._save_path = self.target_featurizer.path.with_suffix(self.target_featurizer.ext)
+        self.drug_featurizer.ext = "lmdb"
+        self.target_featurizer.ext = "lmdb"
+        self.drug_featurizer._save_path = self.drug_featurizer.path.with_suffix(f".{self.drug_featurizer.ext}")
+        self.target_featurizer._save_path = self.target_featurizer.path.with_suffix(f".{self.target_featurizer.ext}")
 
         self.dg_group = dti_dg_group(path=self._data_dir)
         self.dg_benchmark = self.dg_group.get("bindingdb_patent")
@@ -545,7 +565,7 @@ class TDCDataModule(pl.LightningDataModule):
             np.save(self._data_dir / Path("target_struc_dict.npy"), self.target_struc_dict)
         all_targets = pd.concat([train_val, test])[self._target_column].unique()
 
-        if self.drug_featurizer.path.exists() and self.target_featurizer.path.exists():
+        if self.drug_featurizer.pathexists() and self.target_featurizer.pathexists():
             print("Drug and target featurizers already exist")
             return
 
@@ -553,10 +573,10 @@ class TDCDataModule(pl.LightningDataModule):
             self.drug_featurizer.cuda(self._device)
             self.target_featurizer.cuda(self._device)
 
-        if not self.drug_featurizer.path.exists():
+        if not self.drug_featurizer.pathexists():
             self.drug_featurizer.write_to_disk(all_drugs)
 
-        if not self.target_featurizer.path.exists():
+        if not self.target_featurizer.pathexists():
             self.target_featurizer.write_to_disk(all_targets)
 
         self.drug_featurizer.cpu()
@@ -716,17 +736,17 @@ class EnzPredDataModule(pl.LightningDataModule):
         all_drugs = full_data[self._drug_column].unique()
         all_targets = full_data[self._target_column].unique()
 
-        if self.drug_featurizer.path.exists() and self.target_featurizer.path.exists():
+        if self.drug_featurizer.pathexists() and self.target_featurizer.pathexists():
             print("Drug and target featurizers already exist")
 
         if self._device.type == "cuda":
             self.drug_featurizer.cuda(self._device)
             self.target_featurizer.cuda(self._device)
 
-        if not self.drug_featurizer.path.exists():
+        if not self.drug_featurizer.pathexists():
             self.drug_featurizer.write_to_disk(all_drugs)
 
-        if not self.target_featurizer.path.exists():
+        if not self.target_featurizer.pathexists():
             self.target_featurizer.write_to_disk(all_targets)
 
         self.drug_featurizer.cpu()
@@ -1011,7 +1031,7 @@ class LeashDataModule(pl.LightningDataModule):
         """
 
         print(f"drug feat path: {self.drug_featurizer.path}\ntarget path:{self.target_featurizer.path}")
-        if self.drug_featurizer.path.exists() and self.target_featurizer.path.exists():
+        if self.drug_featurizer.pathexists() and self.target_featurizer.pathexists():
             print("Drug and target featurizers already exist")
             return
 
@@ -1034,10 +1054,10 @@ class LeashDataModule(pl.LightningDataModule):
             self.drug_featurizer.cuda(self._device)
             self.target_featurizer.cuda(self._device)
 
-        if not self.drug_featurizer.path.exists():
+        if not self.drug_featurizer.pathexists():
             self.drug_featurizer.write_to_disk(all_drugs, file_path=self.drug_featurizer.path)
 
-        if not self.target_featurizer.path.exists():
+        if not self.target_featurizer.pathexists():
             self.target_featurizer.write_to_disk(all_targets, file_path=self.target_featurizer.path)
 
         self.drug_featurizer.cpu()
@@ -1286,7 +1306,7 @@ class MergedDataModule(pl.LightningDataModule):
     def setup(self, stage: Optional[str] = None):
         # Process drug and target databases if not already processed
         # this stores featurizations for the given ligand ids and target ids into LMDB files
-        smiles_lmdb = 'data/MERGED/huge_data/smiles.lmdb'
+        smiles_lmdb = f'data/MERGED/huge_data/{self.drug_featurizer.name}_features.lmdb'
         target_lmdb = f'data/MERGED/huge_data/{self.target_featurizer.name}_targets.lmdb'
 
         self.drug_featurizer.process_merged_drugs(self.id_to_smiles)
