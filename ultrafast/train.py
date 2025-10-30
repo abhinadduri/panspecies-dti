@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import argparse
 from pathlib import Path
+import shutil  # <-- added
 
 import numpy as np
 import torch
@@ -226,6 +227,25 @@ def _build_checkpoint_callbacks(cfg, save_dir: str):
     return callbacks
 
 
+def _write_canonical_ckpt(best_path: str | None, save_dir: str, exp_id: str) -> str | None:
+    """
+    Copy the best checkpoint to a stable filename <exp_id>.ckpt
+    so tests can find e.g. best_models/unittest/unittest.ckpt.
+    """
+    if not best_path or not os.path.exists(best_path):
+        print("[WARN] No best checkpoint found to canonicalize.")
+        return None
+    os.makedirs(save_dir, exist_ok=True)
+    canon = os.path.join(save_dir, f"{exp_id}.ckpt")
+    try:
+        shutil.copy2(best_path, canon)
+        print(f"[INFO] Wrote canonical checkpoint: {canon}")
+        return canon
+    except Exception as e:
+        print(f"[WARN] Could not write canonical checkpoint: {e}")
+        return None
+
+
 def _run_one_training(cfg):
     save_dir = f'{cfg.get("model_save_dir", ".")}/{cfg.get("experiment_id")}'
     device_no = cfg.get("device", 0)
@@ -280,8 +300,12 @@ def _run_one_training(cfg):
 
     if cfg.get("ship_model"):
         trainer.fit(model, datamodule=datamodule)
-        test_ckpt = ckpt_callbacks[0].best_model_path or None
-        trainer.test(datamodule=datamodule, ckpt_path=test_ckpt)
+        best_ckpt = ckpt_callbacks[0].best_model_path or None
+
+        # Write canonical checkpoint <exp_id>.ckpt for tests
+        _write_canonical_ckpt(best_ckpt, save_dir, cfg.get("experiment_id"))
+
+        trainer.test(datamodule=datamodule, ckpt_path=best_ckpt)
         trainer.save_checkpoint(f"{save_dir}/ship_model.ckpt")
 
         if cfg.get("eval_pcba", False):
@@ -303,7 +327,13 @@ def _run_one_training(cfg):
         trainer.fit(model, datamodule=datamodule)
         pcba_cb = next((c for c in ckpt_callbacks if getattr(c, "monitor", None) and c.monitor.startswith("pcba/")), None)
         chosen_cb = pcba_cb or ckpt_callbacks[0]
-        final_ckpt = cfg.get("checkpoint", None) if cfg.get("epochs", 0) == 0 else (chosen_cb.best_model_path or None)
+
+        best_ckpt = chosen_cb.best_model_path or None
+
+        # Write canonical checkpoint <exp_id>.ckpt for tests
+        _write_canonical_ckpt(best_ckpt, save_dir, cfg.get("experiment_id"))
+
+        final_ckpt = cfg.get("checkpoint", None) if cfg.get("epochs", 0) == 0 else best_ckpt
         trainer.test(datamodule=datamodule, ckpt_path=final_ckpt)
 
         if cfg.get("eval_pcba", False):
@@ -402,7 +432,6 @@ def train_cli():
 
 
 def train(*, exp_id: str, config: str = "configs/default_config.yaml", **kwargs):
-
     if not exp_id:
         raise ValueError("exp_id is required")
 
