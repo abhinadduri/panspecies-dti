@@ -1,18 +1,18 @@
-import os
-import numpy as np
-import pandas as pd
+from __future__ import annotations
 
+import os
+import argparse
+from pathlib import Path
+
+import numpy as np
 import torch
-from torch import nn
+from omegaconf import OmegaConf
+
 import pytorch_lightning as pl
 from pytorch_lightning.callbacks import Callback
 from pytorch_lightning.loggers import WandbLogger
 
 import wandb
-from omegaconf import OmegaConf
-from pathlib import Path
-
-import argparse
 
 from ultrafast.callbacks import eval_pcba
 from ultrafast.datamodules import (
@@ -22,360 +22,380 @@ from ultrafast.datamodules import (
     DUDEDataModule,
     EnzPredDataModule,
     CombinedDataModule,
-    MergedDataModule
+    MergedDataModule,
 )
 from ultrafast.model import DrugTargetCoembeddingLightning
 from ultrafast.drug_only_model import DrugOnlyLightning
-from ultrafast.utils import get_featurizer, xavier_normal
+from ultrafast.utils import get_featurizer
+
 
 class PCBAEvaluationCallback(Callback):
     def on_validation_epoch_end(self, trainer, pl_module):
-        eval_pcba(trainer, pl_module)
+        pcba_dir = getattr(pl_module.args, "pcba_dir", "data/lit_pcba")
+        target_name = getattr(pl_module.args, "pcba_target", None)
 
-def train_cli():
-    parser = argparse.ArgumentParser(description="PLM_DTI Training.")
-    parser.add_argument("--exp-id", required=True, help="Experiment ID", dest="experiment_id")
-    parser.add_argument("--config", help="YAML config file", default="configs/default_config.yaml")
-    parser.add_argument("--wandb-proj", help="Weights and Biases Project",dest="wandb_proj")
-    parser.add_argument("--task", choices=[
-        "biosnap",
-        "bindingdb",
-        "davis",
-        "biosnap_prot",
-        "biosnap_mol",
-        "dti_dg",
-        "merged",
-        "custom",
-        ], type=str, help="Task name. Could be biosnap, bindingdb, davis, biosnap_prot, biosnap_mol, dti_dg.",
+        if target_name is not None and str(target_name).strip().lower() in {"all", "*"}:
+            target_name = None
+
+        eval_pcba(
+            trainer,
+            pl_module,
+            pcba_dir=pcba_dir,
+            target_name=target_name,
+        )
+
+def _read_targets_from_file(path: Path) -> list[str]:
+    if not path.exists():
+        return []
+    out = []
+    with path.open() as fh:
+        for ln in fh:
+            s = ln.strip()
+            if s and not s.startswith("#"):
+                out.append(s)
+    return out
+
+
+def _resolve_pcba_targets(pcba_dir: str) -> list[str]:
+    env_file = os.environ.get("TARGET_FILE")
+    if env_file:
+        lst = _read_targets_from_file(Path(env_file))
+        if lst:
+            return lst
+    lst = _read_targets_from_file(Path(pcba_dir) / "targets.txt")
+    if lst:
+        return lst
+    raise RuntimeError(
+        "No targets list found. Set TARGET_FILE to a file with one target per line "
+        "or create data/lit_pcba/targets.txt"
     )
-    parser.add_argument("--drug-featurizer", help="Drug featurizer", dest="drug_featurizer")
-    parser.add_argument("--target-featurizer", help="Target featurizer", dest="target_featurizer")
-    parser.add_argument('--ligand-only', action="store_true", help="Only use ligand features")
-    parser.add_argument("--epochs", type=int, help="number of total epochs to run")
-    parser.add_argument("--lr", "--learning-rate", type=float, help="initial learning rate", dest="lr",)
-    parser.add_argument("--weight-decay", type=float, default=0.0, help="weight decay for optimizer")
-    parser.add_argument("--clr", type=float, help="contrastive initial learning rate", dest="clr")
-    parser.add_argument("--CEWeight", "-C", default=1.0, type=float, help="Cross Entropy loss weight", dest="CEWeight")
-    parser.add_argument("--InfoNCEWeight","-I", default=0.0, type=float, help="InfoNCE loss weight", dest="InfoNCEWeight")
-    parser.add_argument("--InfoNCETemp", "-T", default=1.0, type=float, help="InfoNCE temperature", dest="InfoNCETemp")
-    parser.add_argument("--r", "--replicate", type=int, help="Replicate", dest="replicate")
-    parser.add_argument("--d", "--device", default=0, type=int, help="CUDA device", dest="device")
-    parser.add_argument("--checkpoint", default=None, help="Model weights to start from")
-    parser.add_argument('--prot-proj', choices=["avg","agg","transformer"], help="Change the protein projector method")
-    parser.add_argument('--out-type', choices=['cls','mean'], help="use cls token or mean of everything else")
 
-    parser.add_argument("--num-layers-target", type=int, help="Number of layers in target transformer", dest="num_layers_target")
-    parser.add_argument("--num-heads-agg", type=int, default=4, help="Number of attention heads for learned aggregation", dest="num_heads_agg")
-    parser.add_argument("--dropout", type=float, help="Dropout rate for transformer", dest="dropout")
-    parser.add_argument("--batch-size", type=int, default=64, help="batch size for training/val/test")
-    parser.add_argument("--num-workers", type=int, default=0, help="number of workers for intial data processing and dataloading during training")
-    parser.add_argument("--no-wandb", action="store_true", help="Do not use wandb")
-    parser.add_argument("--model-size", default="small", choices=["small", "large"], help="Choose the size of the model")
-    parser.add_argument("--ship-model", help="Train a final to ship model, while excluding the uniprot id's specified by this argument.", dest="ship_model")
-    parser.add_argument("--eval-pcba", action="store_true", help="Evaluate PCBA during validation")
-    parser.add_argument("--sigmoid-scalar", type=int, default=5, dest="sigmoid_scalar")
 
-    args = parser.parse_args()
-    train(**vars(args))
-
-def train(
-    experiment_id: str,
-    config: str,
-    wandb_proj: str,
-    task: str,
-    drug_featurizer: str,
-    target_featurizer: str,
-    ligand_only: bool,
-    epochs: int,
-    lr: float,
-    weight_decay: float,
-    clr: float,
-    CEWeight: float,
-    InfoNCEWeight: float,
-    InfoNCETemp: float,
-    replicate: int,
-    device: int,
-    checkpoint: str,
-    prot_proj: str,
-    out_type: str,
-    num_layers_target: int,
-    dropout: float,
-    batch_size: int,
-    num_workers: int,
-    no_wandb: bool,
-    num_heads_agg: int,
-    model_size: str,
-    ship_model: str,
-    eval_pcba: bool,
-    sigmoid_scalar: int,
-):
-    args = argparse.Namespace(
-        experiment_id=experiment_id,
-        config=config,
-        wandb_proj=wandb_proj,
-        task=task,
-        drug_featurizer=drug_featurizer,
-        target_featurizer=target_featurizer,
-        ligand_only=ligand_only,
-        epochs=epochs,
-        lr=lr,
-        weight_decay=weight_decay,
-        clr=clr,
-        CEWeight=CEWeight,
-        InfoNCEWeight=InfoNCEWeight,
-        InfoNCETemp=InfoNCETemp,
-        replicate=replicate,
-        device=device,
-        checkpoint=checkpoint,
-        prot_proj=prot_proj,
-        out_type=out_type,
-        num_layers_target=num_layers_target,
-        dropout=dropout,
-        batch_size=batch_size,
-        num_workers=num_workers,
-        no_wandb=no_wandb,
-        num_heads_agg=num_heads_agg,
-        model_size=model_size,
-        ship_model=ship_model,
-        eval_pcba=eval_pcba,
-        sigmoid_scalar=sigmoid_scalar,
-    )
-    config = OmegaConf.load(args.config)
-    args_overrides = {k: v for k, v in vars(args).items() if v is not None}
-    config.update(args_overrides)
-
-    save_dir = f'{config.get("model_save_dir", ".")}/{config.experiment_id}'
-
-    # Set CUDA device
-    device_no = config.device
-    use_cuda = torch.cuda.is_available()
-    device = torch.device(f"cuda:{device_no}" if use_cuda else "cpu")
-    print(f"Using CUDA device {device}")
-    torch.set_float32_matmul_precision('medium')
-
-    # Set random state
-    print(f"Setting random state {config.replicate}")
-    torch.manual_seed(config.replicate)
-    np.random.seed(config.replicate)
-
-    # Load data
-    print("Preparing DataModule")
-    task_dir = get_task_dir(config.task)
-
-    drug_featurizer = get_featurizer(config.drug_featurizer, save_dir=task_dir, n_jobs=config.num_workers)
-
-    target_featurizer = get_featurizer(config.target_featurizer, save_dir=task_dir)
-
-    # Set up task dm arguments
-    if config.task == 'dti_dg':
-        config.classify = False
-        config.watch_metric = "val/mse"
-        task_dm_kwargs = {
-                "data_dir": task_dir,
-                "drug_featurizer": drug_featurizer,
-                "target_featurizer": target_featurizer,
-                "device": device,
-                "seed": config.replicate,
-                "batch_size": config.batch_size,
-                "shuffle": config.shuffle,
-                "num_workers": config.num_workers,
-                }
-    elif config.task in EnzPredDataModule.dataset_list():
-        # Not implemented yet
-        RuntimeError("EnzPredDataModule not implemented yet")
+def _build_task_dm_kwargs(cfg, torch_device, drug_feat, target_feat):
+    task = cfg.get("task")
+    if task == "dti_dg":
+        cfg["classify"] = False
+        if "watch_metric" not in cfg:
+            cfg["watch_metric"] = "val/mse"
+        return dict(
+            data_dir=get_task_dir(task),
+            drug_featurizer=drug_feat,
+            target_featurizer=target_feat,
+            device=torch_device,
+            seed=cfg.get("replicate", 0),
+            batch_size=cfg.get("batch_size", 64),
+            shuffle=cfg.get("shuffle", True),
+            num_workers=cfg.get("num_workers", 0),
+        )
+    elif task in EnzPredDataModule.dataset_list():
+        raise RuntimeError("EnzPredDataModule not implemented yet")
     else:
-        config.classify = True
-        config.watch_metric = "val/aupr"
-        task_dm_kwargs = {
-                "data_dir": task_dir,
-                "drug_featurizer": drug_featurizer,
-                "target_featurizer": target_featurizer,
-                "device": device,
-                "batch_size": config.batch_size,
-                "shuffle": config.shuffle,
-                "num_workers": config.num_workers,
-                }
+        cfg["classify"] = True
+        if "watch_metric" not in cfg:
+            cfg["watch_metric"] = "val/aupr"
+        return dict(
+            data_dir=get_task_dir(task),
+            drug_featurizer=drug_feat,
+            target_featurizer=target_feat,
+            device=torch_device,
+            batch_size=cfg.get("batch_size", 64),
+            shuffle=cfg.get("shuffle", True),
+            num_workers=cfg.get("num_workers", 0),
+        )
 
-    if config.contrastive:
+
+def _build_datamodule(cfg, torch_device, drug_feat, target_feat):
+    task_dm_kwargs = _build_task_dm_kwargs(cfg, torch_device, drug_feat, target_feat)
+
+    if cfg.get("contrastive", False):
         print("Loading contrastive data (DUDE)")
-        dude_drug_featurizer = get_featurizer(config.drug_featurizer, save_dir=get_task_dir("DUDe"), ext='pt')
-        dude_target_featurizer = get_featurizer(config.target_featurizer, save_dir=get_task_dir("DUDe"))
+        dude_drug = get_featurizer(cfg.get("drug_featurizer"), save_dir=get_task_dir("DUDe"), ext="pt")
+        dude_target = get_featurizer(cfg.get("target_featurizer"), save_dir=get_task_dir("DUDe"))
+        contrastive_dm_kwargs = dict(
+            contrastive_split=cfg.get("contrastive_split", "default"),
+            drug_featurizer=dude_drug,
+            target_featurizer=dude_target,
+            device=torch_device,
+            batch_size=cfg.get("contrastive_batch_size", 64),
+            shuffle=cfg.get("shuffle", True),
+            num_workers=cfg.get("num_workers", 0),
+            contrastive_type=cfg.get("contrastive_type", "default"),
+        )
+        return CombinedDataModule(task=cfg.get("task"), task_kwargs=task_dm_kwargs, contrastive_kwargs=contrastive_dm_kwargs)
 
-        contrastive_dm_kwargs = {
-                "contrastive_split": config.contrastive_split,
-                "drug_featurizer": dude_drug_featurizer,
-                "target_featurizer": dude_target_featurizer,
-                "device": device,
-                "batch_size": config.contrastive_batch_size,
-                "shuffle": config.shuffle,
-                "num_workers": config.num_workers,
-                "contrastive_type": config.contrastive_type,
-                }
-
-        datamodule = CombinedDataModule(
-                task=config.task,
-                task_kwargs=task_dm_kwargs,
-                contrastive_kwargs=contrastive_dm_kwargs,
-                )
-    else:
-        if config.task == 'dti_dg':
-            datamodule = TDCDataModule(**task_dm_kwargs)
-        elif config.task in EnzPredDataModule.dataset_list():
-            RuntimeError("EnzPredDataModule not implemented yet")
-        else:
-            datamodule = DTIDataModule(**task_dm_kwargs)
-
-    if config.task != 'merged':
-        datamodule.prepare_data() # this task is already setup
-    else:
-        datamodule = MergedDataModule(**task_dm_kwargs, ship_model=ship_model)
-    datamodule.setup()
-
-    # Load model
-    if not args.ligand_only:
-        if args.checkpoint:
-            print(f"Loading model from checkpoint: {args.checkpoint}")
-            model = DrugTargetCoembeddingLightning.load_from_checkpoint(
-                args.checkpoint,
-                drug_dim=drug_featurizer.shape,
-                target_dim=target_featurizer.shape,
-                latent_dim=config.latent_dimension,
-                classify=config.classify,
-                contrastive=config.contrastive,
-                InfoNCEWeight=config.InfoNCEWeight,
-                prot_proj=config.prot_proj,
-                dropout=config.dropout,
-                device=device,
-                args=config
-            )
-        else:
-            print("Initializing new model")
-            model = DrugTargetCoembeddingLightning(
-                drug_dim=drug_featurizer.shape,
-                target_dim=target_featurizer.shape,
-                latent_dim=config.latent_dimension,
-                classify=config.classify,
-                contrastive=config.contrastive,
-                InfoNCEWeight=config.InfoNCEWeight,
-                prot_proj=config.prot_proj,
-                dropout=config.dropout,
-                args=config
-            )
-    else:
-        print(f"Loading model from checkpoint: {args.checkpoint}")
-        if args.checkpoint:
-            model = DrugOnlyLightning.load_from_checkpoint(
-                args.checkpoint,
-                drug_dim=drug_featurizer.shape,
-                latent_dim=config.latent_dimension,
-                classify=config.classify,
-                contrastive=config.contrastive,
-                InfoNCEWeight=config.InfoNCEWeight,
-                dropout=config.dropout,
-                device=device,
-                args=config
-            )
-        else:
-            print("Initializing new model")
-            model = DrugOnlyLightning(
-                drug_dim=drug_featurizer.shape,
-                latent_dim=config.latent_dimension,
-                classify=config.classify,
-                contrastive=config.contrastive,
-                InfoNCEWeight=config.InfoNCEWeight,
-                dropout=config.dropout,
-                args=config
-            )
-
-    if args.checkpoint:
-        print(f"Loading model from checkpoint: {args.checkpoint}")
-        model = DrugTargetCoembeddingLightning.load_from_checkpoint(
-            args.checkpoint,
-            drug_dim=drug_featurizer.shape,
-            target_dim=target_featurizer.shape,
-            latent_dim=config.latent_dimension,
-            classify=config.classify,
-            contrastive=config.contrastive,
-            InfoNCEWeight=config.InfoNCEWeight,
-            prot_proj=config.prot_proj,
-            dropout=config.dropout,
-            device=device,
-            args=config
+    task = cfg.get("task")
+    if task == "dti_dg":
+        return TDCDataModule(**task_dm_kwargs)
+    elif task in EnzPredDataModule.dataset_list():
+        raise RuntimeError("EnzPredDataModule not implemented yet")
+    elif task == "merged":
+        return MergedDataModule(
+            **task_dm_kwargs,
+            ship_model=bool(cfg.get("ship_model", False)),
+            ship_model_target=cfg.get("pcba_target"),
+            ship_sim_threshold=cfg.get("ship_sim_threshold", 0.90),
+            pcba_dir=cfg.get("pcba_dir", "data/lit_pcba"),
         )
     else:
-        print("Initializing new model")
-        model = DrugTargetCoembeddingLightning(
-            drug_dim=drug_featurizer.shape,
-            target_dim=target_featurizer.shape,
-            latent_dim=config.latent_dimension,
-            classify=config.classify,
-            contrastive=config.contrastive,
-            InfoNCEWeight=config.InfoNCEWeight,
-            prot_proj = config.prot_proj,
-            dropout=config.dropout,
-            args=config
+        return DTIDataModule(**task_dm_kwargs)
+
+
+def _build_model(cfg, torch_device, drug_feat, target_feat):
+    ckpt_path = cfg.get("checkpoint", None)
+    ligand_only = cfg.get("ligand_only", False)
+    latent_dim = cfg.get("latent_dimension", 512)
+
+    if not ligand_only:
+        if ckpt_path:
+            print(f"Loading model from checkpoint: {ckpt_path}")
+            return DrugTargetCoembeddingLightning.load_from_checkpoint(
+                ckpt_path,
+                drug_dim=drug_feat.shape,
+                target_dim=target_feat.shape,
+                latent_dim=latent_dim,
+                classify=cfg.get("classify", True),
+                contrastive=cfg.get("contrastive", False),
+                InfoNCEWeight=cfg.get("InfoNCEWeight", 0.0),
+                prot_proj=cfg.get("prot_proj", "avg"),
+                dropout=cfg.get("dropout", 0.1),
+                device=torch_device,
+                args=cfg,
+            )
+        print("Initializing new DrugTargetCoembeddingLightning")
+        return DrugTargetCoembeddingLightning(
+            drug_dim=drug_feat.shape,
+            target_dim=target_feat.shape,
+            latent_dim=latent_dim,
+            classify=cfg.get("classify", True),
+            contrastive=cfg.get("contrastive", False),
+            InfoNCEWeight=cfg.get("InfoNCEWeight", 0.0),
+            prot_proj=cfg.get("prot_proj", "avg"),
+            dropout=cfg.get("dropout", 0.1),
+            args=cfg,
+        )
+    else:
+        if ckpt_path:
+            print(f"Loading ligand-only model from checkpoint: {ckpt_path}")
+            return DrugOnlyLightning.load_from_checkpoint(
+                ckpt_path,
+                drug_dim=drug_feat.shape,
+                latent_dim=latent_dim,
+                classify=cfg.get("classify", True),
+                contrastive=cfg.get("contrastive", False),
+                InfoNCEWeight=cfg.get("InfoNCEWeight", 0.0),
+                dropout=cfg.get("dropout", 0.1),
+                device=torch_device,
+                args=cfg,
+            )
+        print("Initializing new DrugOnlyLightning")
+        return DrugOnlyLightning(
+            drug_dim=drug_feat.shape,
+            latent_dim=latent_dim,
+            classify=cfg.get("classify", True),
+            contrastive=cfg.get("contrastive", False),
+            InfoNCEWeight=cfg.get("InfoNCEWeight", 0.0),
+            dropout=cfg.get("dropout", 0.1),
+            args=cfg,
         )
 
-    if not config.no_wandb:
-        wandb_logger = WandbLogger(project=config.wandb_proj, log_model='all')
+def _build_checkpoint_callbacks(cfg, save_dir: str):
+    is_regression = (cfg.get("task") == "dti_dg")
+    watch_metric = "val/mse" if is_regression else "val/aupr"
+    mode = "min" if is_regression else "max"
+    user_watch = cfg.get("watch_metric")
+    if user_watch in ("val/aupr", "val/mse"):
+        watch_metric = user_watch
+        mode = "min" if user_watch == "val/mse" else "max"
+    elif user_watch:
+        print(f"[INFO] Ignoring unsupported watch_metric='{user_watch}'. Using '{watch_metric}'.")
+    metric_key_for_filename = "val_mse" if is_regression else "val_aupr"
+
+    callbacks = [
+        pl.callbacks.ModelCheckpoint(
+            monitor=watch_metric,
+            mode=mode,
+            dirpath=save_dir,
+            filename="{epoch:03d}-{" + metric_key_for_filename + ":.5f}",
+            save_top_k=-1,                       
+            verbose=True,
+            every_n_epochs=1,        
+        )
+    ]
+    return callbacks
+
+
+def _run_one_training(cfg):
+    save_dir = f'{cfg.get("model_save_dir", ".")}/{cfg.get("experiment_id")}'
+    device_no = cfg.get("device", 0)
+    use_cuda = torch.cuda.is_available()
+    torch_device = torch.device(f"cuda:{device_no}" if use_cuda else "cpu")
+    print(f"Using CUDA device {torch_device}")
+    torch.set_float32_matmul_precision("medium")
+    print(f"Setting random state {cfg.get('replicate', 0)}")
+    torch.manual_seed(cfg.get("replicate", 0))
+    np.random.seed(cfg.get("replicate", 0))
+    print("Preparing DataModule")
+    task_dir = get_task_dir(cfg.get("task"))
+    drug_feat = get_featurizer(cfg.get("drug_featurizer"), save_dir=task_dir, n_jobs=cfg.get("num_workers", 0))
+    target_feat = get_featurizer(cfg.get("target_featurizer"), save_dir=task_dir)
+    datamodule = _build_datamodule(cfg, torch_device, drug_feat, target_feat)
+    if cfg.get("task") != "merged":
+        datamodule.prepare_data()
+        datamodule.setup()
+
+    model = _build_model(cfg, torch_device, drug_feat, target_feat)
+
+    if not cfg.get("no_wandb", False):
+        wandb_logger = WandbLogger(project=cfg.get("wandb_proj"), log_model="all")
         wandb_logger.watch(model)
-        if hasattr(wandb_logger.experiment.config, 'update'):
-            wandb_logger.experiment.config.update(OmegaConf.to_container(config, resolve=True, throw_on_missing=True))
-        wandb_logger.experiment.tags = [config.task, config.experiment_id, config.target_featurizer, config.model_size]
-
-    if config.task == 'merged' and args.ship_model:
-        # save every epoch
-        checkpoint_callback = pl.callbacks.ModelCheckpoint(
-            save_top_k=-1,
-            dirpath=save_dir,
-            verbose=True
-        )
+        if hasattr(wandb_logger.experiment.config, "update"):
+            wandb_logger.experiment.config.update(OmegaConf.to_container(cfg, resolve=True, throw_on_missing=True))
+        wandb_logger.experiment.tags = [
+            cfg.get("task"),
+            cfg.get("experiment_id"),
+            cfg.get("target_featurizer"),
+            cfg.get("model_size"),
+        ]
     else:
-        checkpoint_callback = pl.callbacks.ModelCheckpoint(
-            monitor=config.watch_metric,
-            mode="max" if "mse" not in config.watch_metric else "min",
-            filename=config.task,
-            dirpath=save_dir,
-            verbose=True
-        )
+        wandb_logger = None
 
-    callbacks = [checkpoint_callback]
-    if args.eval_pcba:
+    ckpt_callbacks = _build_checkpoint_callbacks(cfg, save_dir)
+
+    callbacks = [*ckpt_callbacks]
+    if cfg.get("eval_pcba", False):
         callbacks.append(PCBAEvaluationCallback())
 
-    callbacks = [checkpoint_callback]
-    if args.eval_pcba:
-        callbacks.append(PCBAEvaluationCallback())
-
-    # Train model
     trainer = pl.Trainer(
         accelerator="auto",
         devices="auto",
         strategy="auto",
-        logger=wandb_logger if not config.no_wandb else None,
-        max_epochs=config.epochs,
+        logger=wandb_logger,
+        max_epochs=cfg.get("epochs", 100),
         callbacks=callbacks,
-        reload_dataloaders_every_n_epochs=1 if config.contrastive else 0,
-        # Disable testing for final model mode
-        limit_test_batches=0 if ship_model else 1.0,
+        reload_dataloaders_every_n_epochs=1 if cfg.get("contrastive", False) else 0,
+        limit_test_batches=1.0,
     )
 
-    if ship_model:
-        # Train on all data and test with best weights
+    if cfg.get("ship_model"):
         trainer.fit(model, datamodule=datamodule)
-        trainer.test(datamodule=datamodule, ckpt_path=checkpoint_callback.best_model_path)
-        # Save the final model
+        test_ckpt = ckpt_callbacks[0].best_model_path or None
+        trainer.test(datamodule=datamodule, ckpt_path=test_ckpt)
         trainer.save_checkpoint(f"{save_dir}/ship_model.ckpt")
+
+        if cfg.get("eval_pcba", False):
+            pcba_cb = next((c for c in ckpt_callbacks if getattr(c, "monitor", None) and c.monitor.startswith("pcba/")), None)
+            eval_ckpt = (pcba_cb.best_model_path if pcba_cb and pcba_cb.best_model_path else ckpt_callbacks[0].best_model_path) or None
+            if eval_ckpt:
+                print(f"\nEvaluating best checkpoint on Lit-PCBA: {eval_ckpt}\n")
+                model_eval = model.__class__.load_from_checkpoint(eval_ckpt)
+            else:
+                print("\nEvaluating current weights on Lit-PCBA (no best checkpoint found)\n")
+                model_eval = model
+            eval_pcba(
+                trainer,
+                model_eval,
+                pcba_dir=cfg.get("pcba_dir", "data/lit_pcba"),
+                target_name=cfg.get("pcba_target"),
+            )
     else:
-        # Regular training with validation
         trainer.fit(model, datamodule=datamodule)
-        # Test model using best weights
-        if config.epochs == 0:
-            ckpt = config.checkpoint
-        else:
-            ckpt = checkpoint_callback.best_model_path
-        trainer.test(datamodule=datamodule, ckpt_path=ckpt)
+        pcba_cb = next((c for c in ckpt_callbacks if getattr(c, "monitor", None) and c.monitor.startswith("pcba/")), None)
+        chosen_cb = pcba_cb or ckpt_callbacks[0]
+        final_ckpt = cfg.get("checkpoint", None) if cfg.get("epochs", 0) == 0 else (chosen_cb.best_model_path or None)
+        trainer.test(datamodule=datamodule, ckpt_path=final_ckpt)
 
+        if cfg.get("eval_pcba", False):
+            eval_ckpt = chosen_cb.best_model_path or None
+            if eval_ckpt:
+                print(f"\nEvaluating best checkpoint on Lit-PCBA: {eval_ckpt}\n")
+                model_eval = model.__class__.load_from_checkpoint(eval_ckpt)
+            else:
+                print("\nEvaluating current weights on Lit-PCBA (no best checkpoint found)\n")
+                model_eval = model
+            eval_pcba(
+                trainer,
+                model_eval,
+                pcba_dir=cfg.get("pcba_dir", "data/lit_pcba"),
+                target_name=cfg.get("pcba_target"),
+            )
 
-if __name__ == '__main__':
-    train()
+def train_cli():
+    parser = argparse.ArgumentParser(description="PLM_DTI Training.")
+    parser.add_argument("--exp-id", required=True, dest="experiment_id", help="Experiment ID")
+    parser.add_argument("--config", default="configs/default_config.yaml", help="YAML config file")
+    parser.add_argument("--wandb-proj", dest="wandb_proj", help="Weights and Biases Project")
+    parser.add_argument(
+        "--task",
+        choices=[
+            "biosnap",
+            "bindingdb",
+            "davis",
+            "biosnap_prot",
+            "biosnap_mol",
+            "dti_dg",
+            "merged",
+            "custom",
+        ],
+        type=str,
+        help="Task name.",
+    )
+    parser.add_argument("--drug-featurizer", dest="drug_featurizer", help="Drug featurizer")
+    parser.add_argument("--target-featurizer", dest="target_featurizer", help="Target featurizer")
+    parser.add_argument("--ligand-only", action="store_true", help="Only use ligand features")
+    parser.add_argument("--epochs", type=int, help="number of total epochs to run")
+    parser.add_argument("--lr", "--learning-rate", dest="lr", type=float, help="initial learning rate")
+    parser.add_argument("--weight-decay", type=float, default=0.0, help="weight decay for optimizer")
+    parser.add_argument("--clr", type=float, dest="clr", help="contrastive initial learning rate")
+    parser.add_argument("--CEWeight", "-C", default=1.0, type=float, help="Cross Entropy loss weight", dest="CEWeight")
+    parser.add_argument("--InfoNCEWeight", "-I", default=0.0, type=float, help="InfoNCE loss weight", dest="InfoNCEWeight")
+    parser.add_argument("--InfoNCETemp", "-T", default=1.0, type=float, help="InfoNCE temperature", dest="InfoNCETemp")
+    parser.add_argument("--r", "--replicate", dest="replicate", type=int, help="Replicate")
+    parser.add_argument("--d", "--device", dest="device", default=0, type=int, help="CUDA device")
+    parser.add_argument("--checkpoint", default=None, help="Model weights to start from")
+    parser.add_argument("--prot-proj", choices=["avg", "agg", "transformer"], help="Protein projector method")
+    parser.add_argument("--out-type", choices=["cls", "mean"], help="use cls token or mean of everything else")
+    parser.add_argument("--num-layers-target", dest="num_layers_target", type=int, help="Target transformer layers")
+    parser.add_argument("--num-heads-agg", dest="num_heads_agg", type=int, default=4, help="Attention heads")
+    parser.add_argument("--dropout", type=float, help="Dropout rate")
+    parser.add_argument("--batch-size", type=int, default=64, help="batch size for training and eval")
+    parser.add_argument("--num-workers", type=int, default=0, help="dataloader workers")
+    parser.add_argument("--no-wandb", action="store_true", help="Do not use wandb")
+    parser.add_argument("--model-size", default="small", choices=["small", "large"], help="Choose the size of the model")
+    parser.add_argument("--ship-model", action="store_true", help="Enable ship mode with on-the-fly similarity exclusions (MMseqs2)")
+    parser.add_argument("--ship-sim-threshold", type=float, default=0.90, help="Sequence identity threshold for removal")
+    parser.add_argument("--pcba-dir", type=str, default="data/lit_pcba", help="Path to Lit-PCBA root")
+    parser.add_argument("--eval-pcba", action="store_true", help="Evaluate PCBA during validation")
+    parser.add_argument("--sigmoid-scalar", type=int, default=5, dest="sigmoid_scalar")
+    parser.add_argument("--pcba-target", type=str, default=None, help="Single Lit-PCBA target. Use ALL or * (or omit) to evaluate all targets each epoch.")
+    parser.add_argument("--watch-metric", type=str, help="Primary metric to monitor for checkpoints (e.g., val/aupr, val/auroc, pcba/auroc)")
+    parser.add_argument("--also-monitor", type=str, help="Comma-separated list of additional metrics to checkpoint (e.g., val/auroc,pcba/auroc)")
+
+    args = parser.parse_args()
+
+    cfg = OmegaConf.load(args.config)
+    cfg.update({k: v for k, v in vars(args).items() if v is not None})
+
+    if "shuffle" not in cfg:
+        cfg["shuffle"] = True
+    if "latent_dimension" not in cfg:
+        cfg["latent_dimension"] = 512
+    if "num_workers" not in cfg:
+        cfg["num_workers"] = 0
+
+    ship_model_val = bool(cfg.get("ship_model", False))
+    pcba_target_val = cfg.get("pcba_target", None)
+
+    run_all = pcba_target_val is None or str(pcba_target_val).strip().lower() in {"all", "*"}
+    if ship_model_val and run_all:
+        print("Running MERGED training with ALL targets excluded (ship mode) and ALL targets evaluated each epoch")
+        cfg["pcba_target"] = None
+        _run_one_training(cfg)
+        return
+
+    if ship_model_val and not run_all and (pcba_target_val is None or str(pcba_target_val).strip() == ""):
+        raise ValueError("--ship-model requires --pcba-target <TARGET> or set --pcba-target ALL to evaluate all targets.")
+
+    _run_one_training(cfg)
+
+if __name__ == "__main__":
+    train_cli()
