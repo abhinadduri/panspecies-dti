@@ -44,6 +44,7 @@ class PCBAEvaluationCallback(Callback):
             target_name=target_name,
         )
 
+
 def _read_targets_from_file(path: Path) -> list[str]:
     if not path.exists():
         return []
@@ -198,6 +199,7 @@ def _build_model(cfg, torch_device, drug_feat, target_feat):
             args=cfg,
         )
 
+
 def _build_checkpoint_callbacks(cfg, save_dir: str):
     is_regression = (cfg.get("task") == "dti_dg")
     watch_metric = "val/mse" if is_regression else "val/aupr"
@@ -216,9 +218,9 @@ def _build_checkpoint_callbacks(cfg, save_dir: str):
             mode=mode,
             dirpath=save_dir,
             filename="{epoch:03d}-{" + metric_key_for_filename + ":.5f}",
-            save_top_k=-1,                       
+            save_top_k=-1,
             verbose=True,
-            every_n_epochs=1,        
+            every_n_epochs=1,
         )
     ]
     return callbacks
@@ -319,6 +321,7 @@ def _run_one_training(cfg):
                 target_name=cfg.get("pcba_target"),
             )
 
+
 def train_cli():
     parser = argparse.ArgumentParser(description="PLM_DTI Training.")
     parser.add_argument("--exp-id", required=True, dest="experiment_id", help="Experiment ID")
@@ -396,6 +399,27 @@ def train_cli():
         raise ValueError("--ship-model requires --pcba-target <TARGET> or set --pcba-target ALL to evaluate all targets.")
 
     _run_one_training(cfg)
+
+
+def train(*, exp_id: str, config: str = "configs/default_config.yaml", **kwargs):
+
+    if not exp_id:
+        raise ValueError("exp_id is required")
+
+    base = OmegaConf.load(config)
+    updates = dict(kwargs)
+    updates["experiment_id"] = exp_id
+    cfg = OmegaConf.merge(base, updates)
+
+    if "shuffle" not in cfg:
+        cfg["shuffle"] = True
+    if "latent_dimension" not in cfg:
+        cfg["latent_dimension"] = 512
+    if "num_workers" not in cfg:
+        cfg["num_workers"] = 0
+
+    _run_one_training(cfg)
+
 
 if __name__ == "__main__":
     train_cli()
