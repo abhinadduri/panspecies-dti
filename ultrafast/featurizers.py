@@ -72,10 +72,15 @@ class Featurizer:
             assert self.id_to_idx is not None, "LMDB database must be preloaded to use this function"
             hashed_seq = hashlib.md5(seq.encode()).hexdigest()
             item = self.db[self.id_to_idx[hashed_seq]]
-            if 'ids' in item:
+            if self._moltype == "target" and 'cls' in item:
+                return torch.from_numpy(np.concatenate([item['cls'][np.newaxis,...],item['feats']]))
+            elif self._moltype == "drug" and 'ids' in item:
                 return torch.from_numpy(item['feats'])
             else:
-                raise ValueError(f"Sequence {seq} not found in LMDB database")
+                if item is None:
+                    raise ValueError(f"Sequence {seq} not found in LMDB database")
+                else:
+                    raise ValueError(f"Sequence {seq} does not have a 'cls' token saved")
 
         if seq not in self.features:
             self._features[seq] = self.transform(seq)
@@ -306,20 +311,28 @@ class Featurizer:
         np.save(self.path.parent / f'{self.name}_id_to_idx.npy', id_to_idx)
         db = px.Writer(dirpath=str(self.path), map_size_limit=self._map_size, ram_gb_limit=10)
 
-        batch_size = 2048 * 8 if self.moltype == "drug" else 16
+        batch_size = 2048 * 8 if self.moltype == "drug" else 32
         for i in tqdm(range(0, len(seq_list), batch_size)):
             batch_ids = np.array(sorted_ids[i:i+batch_size])
             batch_seq = [seq_dict[idx] for idx in batch_ids]
 
+            cls = None
             feats = self.transform(batch_seq)
+            if isinstance(feats, dict):
+                cls = feats['cls']
+                feats = feats['sequence']
 
             if self.moltype == "drug":
                 db.put_samples('ids', batch_ids, 'feats', feats.numpy())
             elif self.moltype == "target":
-                for seq, results in zip(batch_ids, feats):
+                for idx, (seq, results) in enumerate(zip(batch_ids, feats)):
                     seq_data = results.numpy()[np.newaxis, ...]
                     seq_arr = np.array(seq)[np.newaxis, ...]
-                    db.put_samples('ids', seq_arr, 'feats', seq_data)
+                    if cls is None:
+                        db.put_samples('ids', seq_arr, 'feats', seq_data)
+                    else:
+                        seq_cls = cls[idx].numpy()[np.newaxis, ...]
+                        db.put_samples('ids', seq_arr, 'feats', seq_data, 'cls', seq_cls)
         db.close()
 
         print(f"Processed and stored {len(sorted_ids)} {self.moltype} {'fingerprints' if self.moltype == 'drug' else 'sequences'} in LMDB.")
@@ -539,14 +552,16 @@ class ProtBertFeaturizer(Featurizer):
         embeddings = self._protbert_model(input_ids=input_ids, attention_mask=attention_mask)
         embeddings = embeddings.last_hidden_state.detach().cpu()
 
-        results = []
+        results = dict(sequence=[], cls=[])
         for i, seq in enumerate(seqs):
             seq_len = len(seq)
             start_idx = 1
             end_idx = seq_len + 1
             feats = embeddings[i].squeeze()[start_idx:end_idx]
+            cls = embeddings[i].squeee()[0]
             
-            results.append(feats)
+            results['sequence'].append(feats)
+            results['cls'].append(cls)
 
         return results
 
@@ -703,20 +718,19 @@ class SaProtFeaturizer(Featurizer):
                 results = self.model(batch_tokens, repr_layers=[33], return_contacts=False)
             token_embeddings = results["representations"][33].detach().cpu()
 
-            return token_embeddings[0, 1:batch_lens -1].squeeze(0)  # Return the full sequence embedding
+            return {'sequence':token_embeddings[0, 1:batch_lens -1].squeeze(0), 'cls':token_embeddings[0,0].squeeze(0)}  # Return the full sequence embedding
         except Exception as e:
             print(f"Error featurizing single sequence: {seq}")
             if isinstance(seq, str):
-                return torch.zeros((len(seq)//2, self.shape)) # zero vector for each token
+                return {'sequence':torch.zeros((len(seq)//2, self.shape)), 'cls':torch.zeros((1,self.shape))} # zero vector for each token
             else:
                 return torch.zeros((1, self.shape))
 
     def _transform(self, seqs: List[str]) -> List[torch.Tensor]:
         results = []
         try:
-            seqs = [SaProtFeaturizer.prepare_string(seq) for seq in seqs]
+            data = [("protein", SaProtFeaturizer.prepare_string(seq)) for seq in seqs]
 
-            data = [("protein", seq) for seq in seqs]
             _, _, batch_tokens = self.batch_converter(data)
             batch_tokens = batch_tokens.to(self._device)
             batch_lens = (batch_tokens != self.alphabet.padding_idx).sum(dim=1)
@@ -725,9 +739,10 @@ class SaProtFeaturizer(Featurizer):
                 results = self.model(batch_tokens, repr_layers=[33], return_contacts=False)
             token_embeddings = results["representations"][33].detach().cpu()
 
-            results = []
+            results = dict(sequence=[], cls=[])
             for i, token_lens in enumerate(batch_lens):
-                results.append(token_embeddings[i, 1:token_lens -1].squeeze(0))
+                results['sequence'].append(token_embeddings[i, 1:token_lens -1].squeeze(0))
+                results['cls'].append(token_embeddings[i, 0].squeeze(0))
         except RuntimeError as e:
             if "CUDA out of memory" in str(e):
                 print("CUDA out of memory during batch processing. Falling back to sequential processing.")
@@ -737,6 +752,13 @@ class SaProtFeaturizer(Featurizer):
         except Exception as e:
             print(f"Error during batch featurization: {e}")
             results = [self._transform_single(seq) for seq in seqs]
+
+        if isinstance(results, list):
+            res = dict(sequence=[], cls=[])
+            for d in res:
+                res['sequence'].append(d['sequence'])
+                res['cls'].append(d['cls'])
+            results = res
         
         torch.cuda.empty_cache()  # Clear GPU cache after processing
         return results
@@ -745,7 +767,7 @@ class SaProtFeaturizer(Featurizer):
     def prepare_string(seq, max_len=1024):
         if seq.isupper() and '#' not in seq: #if no 3Di tokens
             seq = '#'.join(seq) + '#'
-        if len(seq) > max_len - 2:
+        if len(seq) > max_len * 2 - 2:
             seq = seq[: max_len * 2 - 2]
         return seq
        

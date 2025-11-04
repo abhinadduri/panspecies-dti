@@ -94,6 +94,7 @@ class Learned_Aggregation_Layer(nn.Module):
         qk_scale: float = None,
         attn_drop: float = 0.0,
         proj_drop: float = 0.0,
+        cls_token: str = "learned",
     ):
         super().__init__()
         self.num_heads = num_heads
@@ -101,7 +102,14 @@ class Learned_Aggregation_Layer(nn.Module):
         # NOTE scale factor was wrong in my original version, can set manually to be compat with prev weights
         self.scale = qk_scale if qk_scale is not None else head_dim**-0.5
 
-        self.cls_token = nn.Parameter(torch.randn(1, 1, dim))
+        if cls_token == "learned":
+            self.cls_token = nn.Parameter(torch.randn(1, 1, dim))
+        elif cls_token == "avg":
+            self.cls_token = AverageNonZeroVectors()
+        elif cls_token == "cls":
+            self.cls_token = None
+        else:
+            raise ValueError(f'cls_token:{cls_token} is not in ["learned","avg","cls"]')
         self.q = nn.Linear(dim, dim, bias=qkv_bias)
         self.k = nn.Linear(dim, dim, bias=qkv_bias)
         self.v = nn.Linear(dim, dim, bias=qkv_bias)
@@ -113,8 +121,16 @@ class Learned_Aggregation_Layer(nn.Module):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         if x.dim() == 2:
             x = x.unsqueeze(0)
+
+        cls_tokens = x[:,0,:]
+        x = x[:,1:,:]
         B, N, C = x.shape
-        cls_tokens = self.cls_token.repeat(B, 1, 1)
+
+        if isinstance(self.cls_token, nn.Parameter):
+            cls_tokens = self.cls_token.repeat(B, 1, 1)
+        elif isinstance(self.cls_token, AverageNonZeroVectors):
+            cls_tokens = self.cls_token(x)
+
         q = self.q(cls_tokens).reshape(B, 1, self.num_heads, C // self.num_heads).permute(0, 2, 1, 3)
         k = self.k(x).reshape(B, N, self.num_heads, C // self.num_heads).permute(0, 2, 1, 3)
 

@@ -77,7 +77,9 @@ class DrugTargetCoembeddingLightning(pl.LightningModule):
         elif prot_proj == "transformer":
             protein_projector = TargetEmbedding( self.target_dim, self.latent_dim, self.args.num_layers_target, dropout=dropout, out_type=args.out_type)
         elif prot_proj == "agg":
-            protein_projector = nn.Sequential(Learned_Aggregation_Layer(self.target_dim, num_heads=self.args.num_heads_agg, attn_drop=dropout, proj_drop=dropout), nn.Linear(self.target_dim, self.latent_dim))
+            protein_projector = nn.Sequential(Learned_Aggregation_Layer(self.target_dim, num_heads=self.args.num_heads_agg, attn_drop=dropout, proj_drop=dropout, cls_token=self.args.agg_q), nn.Linear(self.target_dim, self.latent_dim))
+        elif prot_proj == "cls":
+            protein_projector = nn.Sequential(nn.Linear(self.target_dim, self.latent_dim))
 
         if 'model_size' in args and args.model_size == "large":  # override the above settings and use a large model for drug and target
             self.drug_projector = LargeDrugProjector(self.drug_dim, self.latent_dim, self.activation, dropout)
@@ -144,6 +146,9 @@ class DrugTargetCoembeddingLightning(pl.LightningModule):
         # Add a batch dimension if it's missing
         if target.dim() == 2:
             target = target.unsqueeze(0)
+
+        if self.args.prot_proj == "cls":
+            target = target[:,0,:]
 
         target_projection = self.target_projector(target)
 

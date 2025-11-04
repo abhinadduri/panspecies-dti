@@ -61,7 +61,7 @@ def train_cli():
     parser.add_argument("--r", "--replicate", type=int, help="Replicate", dest="replicate")
     parser.add_argument("--d", "--device", default=0, type=int, help="CUDA device", dest="device")
     parser.add_argument("--checkpoint", default=None, help="Model weights to start from")
-    parser.add_argument('--prot-proj', choices=["avg","agg","transformer"], help="Change the protein projector method")
+    parser.add_argument('--prot-proj', choices=["avg","agg","transformer","cls"], help="Change the protein projector method")
     parser.add_argument('--out-type', choices=['cls','mean'], help="use cls token or mean of everything else")
 
     parser.add_argument("--num-layers-target", type=int, help="Number of layers in target transformer", dest="num_layers_target")
@@ -74,6 +74,7 @@ def train_cli():
     parser.add_argument("--ship-model", help="Train a final to ship model, while excluding the uniprot id's specified by this argument.", dest="ship_model")
     parser.add_argument("--eval-pcba", action="store_true", help="Evaluate PCBA during validation")
     parser.add_argument("--sigmoid-scalar", type=int, default=5, dest="sigmoid_scalar")
+    parser.add_argument("--agg-q", default="learned", choices=["learned","avg","cls"], help="how to generate the query for the learned aggregation function")
 
     args = parser.parse_args()
     train(**vars(args))
@@ -108,6 +109,7 @@ def train(
     ship_model: str,
     eval_pcba: bool,
     sigmoid_scalar: int,
+    agg_q: str,
 ):
     args = argparse.Namespace(
         experiment_id=experiment_id,
@@ -139,6 +141,7 @@ def train(
         ship_model=ship_model,
         eval_pcba=eval_pcba,
         sigmoid_scalar=sigmoid_scalar,
+        agg_q=agg_q
     )
     config = OmegaConf.load(args.config)
     args_overrides = {k: v for k, v in vars(args).items() if v is not None}
@@ -317,7 +320,7 @@ def train(
         )
 
     if not config.no_wandb:
-        wandb_logger = WandbLogger(project=config.wandb_proj, log_model='all')
+        wandb_logger = WandbLogger(project=config.wandb_proj, log_model=True)
         wandb_logger.watch(model)
         if hasattr(wandb_logger.experiment.config, 'update'):
             wandb_logger.experiment.config.update(OmegaConf.to_container(config, resolve=True, throw_on_missing=True))
