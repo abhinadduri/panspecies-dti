@@ -752,3 +752,55 @@ class SaProtFeaturizer(Featurizer):
     @staticmethod
     def sanitize_string(s):
         return ''.join(c if c.isalnum() else '_' for c in s)
+
+class OneHotFeaturizer(Featurizer):
+    def __init__(
+        self,
+        shape: int = 20,
+        save_dir: Path = Path().absolute(),
+        ext: str = "h5",
+        batch_size: int = 16,
+        **kwargs
+    ):
+        super().__init__("OneHot", shape, "target", save_dir, ext, batch_size, **kwargs)
+
+        self.alphabet = "ACDEFGHIKLMNPQRSTVWY"  # standard 20 amino acids
+        self.aa_to_idx = {aa: i for i, aa in enumerate(self.alphabet)}
+
+    def _transform_single(self, seq: str):
+        """
+        Convert AA sequence into onehot encoding.
+        :param seq: target AA sequence
+        :type seq: str
+        :return: onehot encoding
+        :rtype: torch.Tensor
+        """
+        if not isinstance(seq, str):
+            if pd.isna(seq):
+                print("Invalid target: NaN")
+                return torch.zeros((1, len(self.alphabet)), dtype=torch.float32)
+            else:
+                seq = str(seq)
+
+        try:
+            seq = seq.upper()
+            onehot = torch.zeros((len(seq), len(self.alphabet)), dtype=torch.float32)
+
+            for i, aa in enumerate(seq):
+                if aa in self.aa_to_idx:
+                    onehot[i, self.aa_to_idx[aa]] = 1.0
+                else:
+                    # Unknown amino acid — leave as zero vector
+                    print(f"Unknown amino acid found {aa}, 0 vector")
+                    pass
+
+            features = onehot
+        except Exception as e:
+            print(f"Error: {seq} convert to all 0 features")
+            print(e)
+            features = torch.zeros((len(seq), len(self.alphabet)), dtype=torch.float32)
+        return features
+
+    def _transform(self, seqs: List[str]) -> List[torch.Tensor]:
+        results = [self._transform_single(seq) for seq in seqs]
+        return results
