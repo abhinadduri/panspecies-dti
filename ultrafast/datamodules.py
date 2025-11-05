@@ -1,10 +1,7 @@
 from __future__ import annotations
 
-import os
-import json
-import subprocess
-import tempfile
 import torch
+import os
 import hashlib
 
 import numpy as np
@@ -13,7 +10,6 @@ import pytorch_lightning as pl
 import pyxis as px
 import typing as T
 
-from typing import Optional, List, Set, Dict, Tuple
 
 from multiprocessing import Pool
 from numpy.random import choice
@@ -22,9 +18,9 @@ from sklearn.model_selection import KFold, train_test_split
 from tdc.benchmark_group import dti_dg_group
 from torch.utils.data import Dataset, DataLoader
 from torch.nn.utils.rnn import pad_sequence
+from typing import Optional
 from ultrafast.featurizers import Featurizer
 from ultrafast.tdc_utils import compute_ESM_features, get_saprot_seq
-
 
 def get_task_dir(task_name: str):
     """
@@ -47,7 +43,7 @@ def get_task_dir(task_name: str):
         "bkace": "./data/EnzPred/duf_binary",
         "gt": "./data/EnzPred/gt_acceptors_achiral_binary",
         "esterase": "./data/EnzPred/esterase_binary",
-        "kinase": "./data/EnzPred/kinase_chiral_binary",
+        "kinase": "./data/EnzPred/davis_filtered",
         "phosphatase": "./data/EnzPred/phosphatase_chiral_binary",
         "merged": "./data/MERGED/huge_data",
         "custom": "./data/custom/",
@@ -55,11 +51,84 @@ def get_task_dir(task_name: str):
 
     return Path(task_paths[task_name.lower()]).resolve()
 
+def compute_similar_sequences_single_target(target_sequence, train_sequences, threshold=0.9, tmp_dir='tmp_mmseqs'):
+    """
+    Compute sequence similarity for target protein(s) against training sequences using MMSeqs2.
+
+    Args:
+        target_sequence: Single target protein sequence string or list of sequences
+        train_sequences: Dictionary mapping UniProt IDs to sequences
+        threshold: Similarity threshold (0.0-1.0) for filtering
+        tmp_dir: Temporary directory for MMSeqs2 files
+
+    Returns:
+        Set of UniProt IDs that have similarity >= threshold to any target sequence
+    """
+    import subprocess
+    import tempfile
+
+    os.makedirs(tmp_dir, exist_ok=True)
+
+    # Create temporary FASTA files
+    with tempfile.NamedTemporaryFile(mode='w', suffix='.fasta', delete=False, dir=tmp_dir) as target_fasta:
+        # Handle single sequence or list of sequences
+        if isinstance(target_sequence, list):
+            for idx, seq in enumerate(target_sequence):
+                target_fasta.write(f">target_{idx}\n{seq}\n")
+        else:
+            target_fasta.write(f">target\n{target_sequence}\n")
+        target_fasta_path = target_fasta.name
+
+    with tempfile.NamedTemporaryFile(mode='w', suffix='.fasta', delete=False, dir=tmp_dir) as train_fasta:
+        for seq_id, seq in train_sequences.items():
+            train_fasta.write(f">{seq_id}\n{seq}\n")
+        train_fasta_path = train_fasta.name
+
+    # Create output file path
+    output_file = os.path.join(tmp_dir, 'similar_sequences.tsv')
+
+    try:
+        # Run MMSeqs2
+        commands = [
+            f"mmseqs createdb {train_fasta_path} {tmp_dir}/queryDB",
+            f"mmseqs createdb {target_fasta_path} {tmp_dir}/targetDB",
+            f"mmseqs search {tmp_dir}/queryDB {tmp_dir}/targetDB {tmp_dir}/resultDB {tmp_dir} -s 7.5 --min-seq-id {threshold}",
+            f"mmseqs convertalis {tmp_dir}/queryDB {tmp_dir}/targetDB {tmp_dir}/resultDB {output_file}"
+        ]
+
+        for cmd in commands:
+            subprocess.run(cmd, shell=True, check=True, capture_output=True)
+
+        # Process results
+        similar_ids = set()
+        if os.path.exists(output_file):
+            with open(output_file, 'r') as f:
+                for line in f:
+                    query_id = line.split('\t')[0]
+                    similar_ids.add(query_id)
+
+        return similar_ids
+
+    finally:
+        # Clean up temporary files
+        for pattern in ['queryDB*', 'targetDB*', 'resultDB*', target_fasta_path, train_fasta_path, output_file]:
+            subprocess.run(f"rm -f {tmp_dir}/{pattern} 2>/dev/null || true", shell=True)
 
 def embed_collate_fn(args: T.Tuple[torch.Tensor, torch.Tensor], moltype="target"):
+    """
+    Collate function for PyTorch data loader -- turn a batch of molecules into a batch of tensors
 
-    if isinstance(args[0], list):
+    :param args: Batch of molecules
+    :type args: Iterable[Tuple[torch.Tensor, torch.Tensor]]
+    :param moltype: Molecule type
+    :type moltype: str
+    :return: Create a batch of examples
+    :rtype: torch.Tensor
+    """
+    # m_emb = [a for a in args]
+    if isinstance(args[0],list):
         args = [a[0] for a in args]
+
 
     if moltype == "drug":
         mols = torch.stack(args, 0)
@@ -70,8 +139,15 @@ def embed_collate_fn(args: T.Tuple[torch.Tensor, torch.Tensor], moltype="target"
 
     return mols
 
-
 def drug_target_collate_fn(args: T.Tuple[torch.Tensor, torch.Tensor, torch.Tensor]):
+    """
+    Collate function for PyTorch data loader -- turn a batch of triplets into a triplet of batches
+
+    :param args: Batch of training samples with molecule, protein, and affinity
+    :type args: Iterable[Tuple[torch.Tensor, torch.Tensor, torch.Tensor]]
+    :return: Create a batch of examples
+    :rtype: T.Tuple[torch.Tensor, torch.Tensor, torch.Tensor]
+    """
     d_emb = [a[0] for a in args]
     t_emb = [a[1] for a in args]
     labs = [a[2] for a in args]
@@ -82,8 +158,17 @@ def drug_target_collate_fn(args: T.Tuple[torch.Tensor, torch.Tensor, torch.Tenso
 
     return drugs, targets, labels
 
-
 def contrastive_collate_fn(args: T.Tuple[torch.Tensor, torch.Tensor, torch.Tensor]):
+    """
+    Collate function for PyTorch data loader -- turn a batch of triplets into a triplet of batches
+
+    Specific collate function for contrastive dataloader
+
+    :param args: Batch of training samples with anchor, positive, negative
+    :type args: Iterable[Tuple[torch.Tensor, torch.Tensor, torch.Tensor]]
+    :return: Create a batch of examples
+    :rtype: T.Tuple[torch.Tensor, torch.Tensor, torch.Tensor]
+    """
     anchor_emb = [a[0] for a in args]
     pos_emb = [a[1] for a in args]
     neg_emb = [a[2] for a in args]
@@ -93,7 +178,6 @@ def contrastive_collate_fn(args: T.Tuple[torch.Tensor, torch.Tensor, torch.Tenso
     negatives = torch.stack(neg_emb, 0)
 
     return anchors, positives, negatives
-
 
 def make_contrastive(
         df: pd.DataFrame,
@@ -117,7 +201,6 @@ def make_contrastive(
     )
     return contrastive
 
-
 def make_diffprot_contrastive(
         df: pd.DataFrame,
         posneg_column: str,
@@ -131,7 +214,7 @@ def make_diffprot_contrastive(
     contrastive = []
 
     for _, r in pos_df.iterrows():
-        neg_df = pos_df[r[anchor_column] != pos_df[anchor_column]]  # get all rows where the anchor is not the same
+        neg_df = pos_df[r[anchor_column] != pos_df[anchor_column]] # get all rows where the anchor is not the same
         for _ in range(n_neg_per):
             contrastive.append((r[anchor_column], r[posneg_column], choice(neg_df[posneg_column])))
     contrastive = pd.DataFrame(
@@ -139,7 +222,6 @@ def make_diffprot_contrastive(
     )
 
     return contrastive
-
 
 class BinaryDataset(Dataset):
     def __init__(
@@ -166,7 +248,6 @@ class BinaryDataset(Dataset):
         label = torch.tensor(self.labels.iloc[i], dtype=torch.float32)
 
         return drug, target, label
-
 
 class ContrastiveDataset(Dataset):
     def __init__(
@@ -195,7 +276,6 @@ class ContrastiveDataset(Dataset):
 
         return anchorEmb, positiveEmb, negativeEmb
 
-
 class EmbedInMemoryDataset(Dataset):
     def __init__(
         self,
@@ -217,7 +297,6 @@ class EmbedInMemoryDataset(Dataset):
 
         return item
 
-
 class EmbeddedDataset(Dataset):
     def __init__(self,
                  emb_file: str,
@@ -226,7 +305,7 @@ class EmbeddedDataset(Dataset):
         if emb_file.endswith(".npy"):
             self.data = np.load(emb_file, mmap_mode="r")
         elif emb_file.endswith(".lmdb"):
-            self.db = px.Reader(dirpath=str(emb_file), lock=False)  # we only read
+            self.db = px.Reader(dirpath=str(emb_file), lock=False) # we only read
 
     def __len__(self):
         return len(self.data) if self.data is not None else len(self.db)
@@ -240,7 +319,6 @@ class EmbeddedDataset(Dataset):
     def teardown(self):
         if self.db is not None:
             self.db.close()
-
 
 class EmbedDataset(Dataset):
     def __init__(
@@ -259,7 +337,7 @@ class EmbedDataset(Dataset):
         self.featurizer.preload(self.data[self._column].unique().tolist(), write_first=True, seq_func=featurizer.prepare_string)
         self.db = None
         if str(self.featurizer._save_path).endswith("lmdb"):
-            self.db = px.Reader(dirpath=str(self.featurizer._save_path), lock=False)  # we only read
+            self.db = px.Reader(dirpath=str(self.featurizer._save_path), lock=False) # we only read
 
     def __len__(self):
         return len(self.data)
@@ -271,14 +349,22 @@ class EmbedDataset(Dataset):
         else:
             mol = torch.from_numpy(self.db[i]['feats'])
 
+
         return mol
 
     def teardown(self, stage):
         if self.db is not None:
             self.db.close()
 
-
 class DTIDataModule(pl.LightningDataModule):
+    """ DataModule used for training on drug-target interaction data.
+    Uses the following data sets:
+    - biosnap
+    - biosnap_prot
+    - biosnap_mol
+    - bindingdb
+    - davis
+    """
     def __init__(
             self,
             data_dir: str,
@@ -333,6 +419,9 @@ class DTIDataModule(pl.LightningDataModule):
         self.drug_db, self.target_db = None, None
 
     def prepare_data(self):
+        """
+        Featurize drugs and targets and save them to disk if they don't already exist
+        """
 
         print(f"drug feat path: {self.drug_featurizer.path}\ntarget path:{self.target_featurizer.path}")
         if self.drug_featurizer.path.exists() and self.target_featurizer.path.exists():
@@ -424,6 +513,9 @@ class DTIDataModule(pl.LightningDataModule):
 
 
 class TDCDataModule(pl.LightningDataModule):
+    """ DataModule used for training on drug-target interaction data.
+    Uses the dti_dg dataset
+    """
     def __init__(
             self,
             data_dir: str,
@@ -489,6 +581,7 @@ class TDCDataModule(pl.LightningDataModule):
             if (self._data_dir / Path("target_struc_dict.npy")).exists():
                 self.target_struc_dict = np.load(self._data_dir / Path("target_struc_dict.npy"), allow_pickle=True).item()
             else:
+                # get the sequence for each target_id in target_ids, using the Target column
                 print("Computing SaProt sequences for TDC data with AFDB structures")
                 self.target_struc_dict = self.compute_structure_features(target_ids)
             
@@ -498,13 +591,18 @@ class TDCDataModule(pl.LightningDataModule):
                     not_found.append(target_id)
             if len(not_found) > 0:
                 print(f"Could not find sequences for {len(not_found)} targets")
+                # get the sequence for each target_id in not_found, using the Target column
                 not_found = pd.concat([train_val, test]).loc[pd.concat([train_val, test])["Target_ID"].isin(not_found)]
+                # create a dictionary with the target_id as key and the sequence as value
                 not_found_dict = dict(zip(not_found["Target_ID"], not_found["Target"]))
 
                 for tid in not_found_dict.keys():
-                    not_found_dict[tid] = '#'.join(list(not_found_dict[tid])) 
+                    not_found_dict[tid] = '#'.join(list(not_found_dict[tid])) # just mask the structure tokens
                 print(f"Masking the structure tokens for the {len(not_found)} examples")
+                # esm_struct_dict = compute_ESM_features(not_found_dict)
+                # # update the target_struc_dict with the sequences from esm_struct_dict
                 self.target_struc_dict.update(not_found_dict)
+            # add the sequences to the train_val and test dataframes
             train_val[self._target_column] = train_val["Target_ID"].map(self.target_struc_dict)
             test[self._target_column] = test["Target_ID"].map(self.target_struc_dict)
             np.save(self._data_dir / Path("target_struc_dict.npy"), self.target_struc_dict)
@@ -585,6 +683,9 @@ class TDCDataModule(pl.LightningDataModule):
             )
 
     def compute_structure_features(self, target_ids):
+        """
+        Compute structure features for the target proteins
+        """
         with Pool(self._loader_kwargs['num_workers']) as p:
             results = p.map(get_saprot_seq, target_ids)
         ids, seqs = zip(*results)
@@ -602,8 +703,16 @@ class TDCDataModule(pl.LightningDataModule):
     def test_dataloader(self):
         return DataLoader(self.data_test, **self._loader_kwargs)
 
-
 class EnzPredDataModule(pl.LightningDataModule):
+    """ DataModule used for training on drug-target interaction for enzymes.
+    Uses the following data sets:
+    - halogenase
+    - bkace
+    - gt
+    - esterase
+    - kinase
+    - phosphatase
+    """
     def __init__(
             self,
             data_dir: str,
@@ -689,6 +798,7 @@ class EnzPredDataModule(pl.LightningDataModule):
         for i, split in enumerate(kfsplitter.split(full_data)):
             fold_train = full_data.iloc[split[0]].reset_index(drop=True)
             fold_test = full_data.iloc[split[1]].reset_index(drop=True)
+            #logg.debug(self._data_dir / self._data_stem.with_suffix(f".{i}.train.csv"))
             fold_train.to_csv(
                     self._data_dir / self._data_stem.with_suffix(f".{i}.train.csv"),
                     index=True,
@@ -706,7 +816,7 @@ class EnzPredDataModule(pl.LightningDataModule):
                 self._data_dir / self._data_stem.with_suffix(f".{self._replicate}.train.csv"),
                 index_col=0,
             )
-        self.df_train, self.df_val = train_test_split(df_train, test_size=0.1, random_state=0)
+        self.df_train, self.df_val = train_test_split(df_train, test_size=0.1)
         self.df_test = pd.read_csv(
                 self._data_dir / self._data_stem.with_suffix(f".{self._replicate}.test.csv"),
                 index_col=0,
@@ -761,7 +871,6 @@ class EnzPredDataModule(pl.LightningDataModule):
 
     def test_dataloader(self):
         return DataLoader(self.data_test, **self._loader_kwargs)
-
 
 class DUDEDataModule(pl.LightningDataModule):
     def __init__(
@@ -872,9 +981,9 @@ class DUDEDataModule(pl.LightningDataModule):
     def train_dataloader(self):
         return DataLoader(self.data_train, **self._loader_kwargs)
 
-
 class CombinedDataModule(pl.LightningDataModule):
-
+    """DataModule that combines one of [DTIDataModule, TDCDataModule, EnzPredDataModule] and the DUDeDataModule
+    """
     def __init__(
             self,
             task: str,
@@ -916,7 +1025,6 @@ class CombinedDataModule(pl.LightningDataModule):
     def test_dataloader(self):
         return self.task_module.test_dataloader()
 
-
 class LeashDataModule(pl.LightningDataModule):
     def __init__(
             self,
@@ -950,6 +1058,7 @@ class LeashDataModule(pl.LightningDataModule):
 
         self._data_dir = Path(data_dir)
         self._train_path = Path("train_conplex.csv")
+        # self._val_path = Path("val.csv")
         self._test_path = Path("test_conplex.csv")
 
         self._drug_column = "molecule_smiles"
@@ -960,6 +1069,9 @@ class LeashDataModule(pl.LightningDataModule):
         self.target_featurizer = target_featurizer
 
     def prepare_data(self):
+        """
+        Featurize drugs and targets and save them to disk if they don't already exist
+        """
 
         print(f"drug feat path: {self.drug_featurizer.path}\ntarget path:{self.target_featurizer.path}")
         if self.drug_featurizer.path.exists() and self.target_featurizer.path.exists():
@@ -971,8 +1083,9 @@ class LeashDataModule(pl.LightningDataModule):
         df_test = pd.read_csv(self._data_dir / self._test_path, **self._csv_kwargs)
 
         dataframes = [df_train, df_test]
+        # remove "[Dy]" from the drug smiles
         for df in dataframes:
-            df[self._drug_column] = df[self._drug_column].str.replace(r"\[Dy\]", "", regex=True)
+            df[self._drug_column] = df[self._drug_column].str.replace("\[Dy\]", "")
         all_drugs = pd.concat([i[self._drug_column] for i in dataframes]).unique()
         all_target_names = pd.concat([i[self._target_column] for i in dataframes]).unique()
         all_targets = []
@@ -994,16 +1107,14 @@ class LeashDataModule(pl.LightningDataModule):
         self.target_featurizer.cpu()
 
     def setup(self, stage = None):
-        df_train = pd.read_csv(self._data_dir / self._train_path, **self._csv_kwargs)
-        df_test = pd.read_csv(self._data_dir / self._test_path, **self._csv_kwargs)
-
-        df_train[self._drug_column] = df_train[self._drug_column].str.replace(r"\[Dy\]", "", regex=True)
-        df_test[self._drug_column] = df_test[self._drug_column].str.replace(r"\[Dy\]", "", regex=True)
-
-        self.df_train, self.df_val = train_test_split(df_train, test_size=0.1, random_state=0)
-        self.df_test = df_test
+        self.df_train = pd.read_csv(self._data_dir / self._train_path, **self._csv_kwargs)
+        self.df_val = pd.read_csv(self._data_dir / self._val_path, **self._csv_kwargs)
+        self.df_test = pd.read_csv(self._data_dir / self._test_path, **self._csv_kwargs)
 
         self._dataframes = [self.df_train, self.df_val, self.df_test]
+        # remove "[Dy]" from the drug smiles
+        for df in self._dataframes:
+            df[self._drug_column] = df[self._drug_column].str.replace("\[Dy\]", "")
 
         all_drugs = pd.concat([i[self._drug_column] for i in self._dataframes]).unique()
         all_target_names = pd.concat([i[self._target_column] for i in self._dataframes]).unique()
@@ -1011,6 +1122,7 @@ class LeashDataModule(pl.LightningDataModule):
         for targ in all_target_names:
             with open(self._data_dir / f"{targ}.fasta") as f:
                 all_targets[targ] = f.read().strip()
+
 
         if self._device.type == "cuda":
             self.drug_featurizer.cuda(self._device)
@@ -1022,6 +1134,7 @@ class LeashDataModule(pl.LightningDataModule):
         self.target_featurizer.preload(list(all_targets.values()))
         self.target_featurizer.cpu()
 
+        # using the all_targets dictionary, map the target names to the sequences in the dataframes
         for df in self._dataframes:
             df[self._target_column] = df[self._target_column].map(all_targets)
 
@@ -1051,15 +1164,24 @@ class LeashDataModule(pl.LightningDataModule):
                 self.target_featurizer,
             )
 
-
 class MergedDataset(Dataset):
-    def __init__(self, split, drug_db, target_db, id_to_smiles, id_to_target, tdim=1280,
-                 exclusion_ids: Optional[Set[str]] = None, neg_sample_ratio=3):
+    def __init__(self, split, drug_db, target_db, id_to_smiles, id_to_target, tdim=1280, exclusion_file=None, neg_sample_ratio=3):
+        """
+        Constructor for the merged dataset, pooling DTI data from PubChem, BindingDB, and ChEMBL.
+
+        `split`: one of 'train', 'test', or 'val'
+        `drug_db`: a reference to the LMDB database of ligands that supports this dataset.
+        `target_db`: a reference to the LMDB database of targets that supports this dataset.
+        """
         self.split = split
         self.neg_sample_ratio = neg_sample_ratio
+
+        # Ligand ID to smiles mapping
         self.id_to_smiles = id_to_smiles
+        # Target ID to smiles mapping
         self.id_to_target = id_to_target
 
+        # Load the sequence model's embedding dimension
         self.tdim = tdim
 
         id_list = []
@@ -1071,49 +1193,62 @@ class MergedDataset(Dataset):
         self.id_to_target = {k: self.id_to_target[k] for k in id_list}
         self.id_list = id_list
 
+        # connect the db id to the lmdb index
         self.id_to_drug_lmdb = {db_id: lmdb_id for lmdb_id, db_id in enumerate(self.id_to_smiles.keys())}
         self.id_to_prot_lmdb = {db_id: lmdb_id for lmdb_id, db_id in enumerate(id_list)}
 
-        self.exclusion: Set[str] = set()
-        if exclusion_ids is not None:
-            self.exclusion.update(exclusion_ids)
+        # Exclude some ID's for homology based analysis
+        self.exclusion = set()
+        if exclusion_file is not None:
+            for line in open(exclusion_file.strip()):
+                self.exclusion.add(line.strip())
 
+        # Load positive and negative interactions
         if split == 'all':
             print('Training on all of train / val / test data to ship model.')
+            # Combine all data for final model
             pos_data_train = pd.read_csv('data/MERGED/huge_data/merged_pos_uniq_train_rand.tsv', sep='\t')
             pos_data_val = pd.read_csv('data/MERGED/huge_data/merged_pos_uniq_val_rand.tsv', sep='\t')
             pos_data_test = pd.read_csv('data/MERGED/huge_data/merged_pos_uniq_test_rand.tsv', sep='\t')
-            self.pos_data = pd.concat([pos_data_train, pos_data_val, pos_data_test], ignore_index=True)
+            self.pos_data = pd.concat([pos_data_train, pos_data_val, pos_data_test])
 
             neg_data_train = pd.read_csv('data/MERGED/huge_data/merged_neg_uniq_train_rand.tsv', sep='\t')
             neg_data_val = pd.read_csv('data/MERGED/huge_data/merged_neg_uniq_val_rand.tsv', sep='\t')
             neg_data_test = pd.read_csv('data/MERGED/huge_data/merged_neg_uniq_test_rand.tsv', sep='\t')
-            self.neg_data = pd.concat([neg_data_train, neg_data_val, neg_data_test], ignore_index=True)
+            self.neg_data = pd.concat([neg_data_train, neg_data_val, neg_data_test])
         else:
             self.pos_data = pd.read_csv(f'data/MERGED/huge_data/merged_pos_uniq_{split}_rand.tsv', sep='\t')
             self.neg_data = pd.read_csv(f'data/MERGED/huge_data/merged_neg_uniq_{split}_rand.tsv', sep='\t')
-
-        if self.split == 'all' and len(self.exclusion) > 0:
-            bp, bn = len(self.pos_data), len(self.neg_data)
-            self.pos_data = self.pos_data[~self.pos_data['aa_seq'].isin(self.exclusion)].reset_index(drop=True)
-            self.neg_data = self.neg_data[~self.neg_data['aa_seq'].isin(self.exclusion)].reset_index(drop=True)
-            ap, an = len(self.pos_data), len(self.neg_data)
-            print(f"[MergedDataset] Hard-removed excluded proteins for ship-mode: "
-                  f"pos {bp}->{ap}, neg {bn}->{an} (removed {bp-ap + bn-an} rows)")
-
+        
+        # Receive drug and target db's from the datamodule. we assume that concurrent reads are ok
         self.drug_db = drug_db
         self.target_db = target_db
 
+        # Sample negative data for the epoch
         self.update_epoch_data()
 
     def update_epoch_data(self):
+        """
+        Samples a random number of negative data, equal to the amount of positive data we have.
+        These will be used for the current epoch.
+        """
         neg_sample_size = min(len(self.pos_data) * self.neg_sample_ratio, len(self.neg_data))
         self.epoch_neg_data = self.neg_data.sample(n=neg_sample_size, replace=False)
 
     def __len__(self):
+        """
+        Returns the total amount of data that we make visible during this epoch.
+        This would be all the positive data, and some random subsample of the negative data.
+        Therefore this always totals to 2 * len(self.pos_data).
+        """
         return len(self.pos_data) + len(self.epoch_neg_data)
 
     def __getitem__(self, idx):
+        """
+        Get an item from this dataset by idx.
+        If the idx is less than the size of the positive data, we return the positive example. 
+        Otherwise return a negative example.
+        """
         if idx < len(self.pos_data):
             interaction = self.pos_data.iloc[idx]
             label = 1.0
@@ -1123,29 +1258,35 @@ class MergedDataset(Dataset):
 
         drug_id, aa_id = interaction['ligand'], interaction['aa_seq']
 
-        # Fetch drug features
-        drug_lmdb_idx = self.id_to_drug_lmdb[drug_id]
-        drug_features = self.drug_db[drug_lmdb_idx]['feats']
+        # aa_id is the uniprot id, simply check and see if this is blacklisted under mmseq threshold.
+        drug_id = self.id_to_drug_lmdb[drug_id]
+        drug_features = self.drug_db[drug_id]['feats']
 
-        # Fetch target features
-        if aa_id not in self.id_to_prot_lmdb:
+        # if the uniprot id is to be excluded for homology analysis
+        if self.split == 'all' and aa_id in self.exclusion:
+            drug_features = np.zeros(drug_features.shape, dtype=np.float32)
+            # if this is not ProtBert...
             target_features = np.zeros((1, self.tdim), dtype=np.float32)
         else:
-            target_entry = self.target_db[self.id_to_prot_lmdb[aa_id]]
-            if aa_id in target_entry:
-                target_features = target_entry[aa_id]
-            else:
+            if aa_id not in self.id_to_prot_lmdb: # if the uniprot id is not in the map
                 target_features = np.zeros((1, self.tdim), dtype=np.float32)
+            else:
+                target_entry = self.target_db[self.id_to_prot_lmdb[aa_id]]
 
+                if aa_id in target_entry:
+                    target_features = target_entry[aa_id]
+                else:
+                    target_features = np.zeros((1, self.tdim), dtype=np.float32)
+
+        # Fetch the drug and target feature for this idx from LMDB
         return (
-            torch.from_numpy(drug_features),
-            torch.from_numpy(target_features),
-            torch.tensor(label, dtype=torch.float32)
+            torch.from_numpy(drug_features), # drug
+            torch.from_numpy(target_features), # target
+            torch.tensor(label, dtype=torch.float32) # label
         )
 
     def on_epoch_end(self):
         self.update_epoch_data()
-
 
 class MergedDataModule(pl.LightningDataModule):
     def __init__(
@@ -1153,7 +1294,7 @@ class MergedDataModule(pl.LightningDataModule):
         data_dir: str,
         drug_featurizer: Featurizer,
         target_featurizer: Featurizer,
-        device: torch.device = torch.device("cuda"),
+        device: torch.device("cuda"),
         batch_size: int = 32,
         shuffle: bool = True,
         num_workers: int = 17,
@@ -1164,9 +1305,8 @@ class MergedDataModule(pl.LightningDataModule):
         index_col=0,
         sep=",",
         ship_model: bool = False,
-        ship_model_target: Optional[str] = None,
-        ship_sim_threshold: float = 0.90,
-        pcba_dir: str = "data/lit_pcba",
+        similarity_threshold: float = 0.9,
+        target_protein_id: str = None,
     ):
         super().__init__()
         self._loader_kwargs = {
@@ -1178,19 +1318,11 @@ class MergedDataModule(pl.LightningDataModule):
 
         self.drug_featurizer = drug_featurizer
         self.target_featurizer = target_featurizer
-        self.ship_model = bool(ship_model)
-        self.ship_model_target = ship_model_target
-        self.ship_sim_threshold = ship_sim_threshold
-        self.pcba_dir = pcba_dir
+        self.ship_model = ship_model
+        self.similarity_threshold = similarity_threshold
+        self.target_protein_id = target_protein_id
 
-        if self.ship_model:
-            if self.ship_model_target is None:
-                self.ship_model_target = "ALL"
-            else:
-                s = str(self.ship_model_target).strip().lower()
-                if s in {"*", "all"}:
-                    self.ship_model_target = "ALL"
-
+        # Load in the ID to SMILES and ID to target sequence files
         self.id_to_smiles = np.load('data/MERGED/huge_data/id_to_smiles.npy', allow_pickle=True).item()
         if self.target_featurizer.name == "SaProt":
             self.id_to_target = np.load('data/MERGED/huge_data/id_to_saprot_sequence.npy', allow_pickle=True).item()
@@ -1206,6 +1338,7 @@ class MergedDataModule(pl.LightningDataModule):
         self.id_to_target = {k: self.id_to_target[k] for k in id_list}
         self.id_list = id_list
 
+        # connect the db id to the lmdb index
         self.id_to_drug_lmdb = {db_id: lmdb_id for lmdb_id, db_id in enumerate(self.id_to_smiles.keys())}
         self.id_to_prot_lmdb = {db_id: lmdb_id for lmdb_id, db_id in enumerate(id_list)}
 
@@ -1213,141 +1346,77 @@ class MergedDataModule(pl.LightningDataModule):
         self.val_size = val_size
         self.random_state = random_state
 
+        # these get initialized in setup
         self.drug_db = None
         self.target_db = None
 
-
-    def _seqdict_path(self) -> str:
-        """Select the Lit-PCBA sequence dict file based on featurizer."""
-        seq_file = "saprot_sequence_dict.json" if self.target_featurizer.name == "SaProt" \
-                   else "lit_pcba_sequence_dict.json"
-        path = os.path.join(self.pcba_dir, seq_file)
-        if not os.path.isfile(path):
-            raise FileNotFoundError(f"Missing Lit-PCBA sequence dictionary at {path}")
-        return path
-
-    def _load_pcba_all_sequences(self) -> dict:
-        """
-        Load sequences for the UNION of all Lit-PCBA targets.
-        Returns dict[str_id] -> sequence (flat index).
-        """
-        path = self._seqdict_path()
-        target_sets = json.load(open(path))
-
-        pcba_sequences = {}
-        idx = 0
-        for tname, seqs in target_sets.items():
-            for seq in seqs:
-                pcba_sequences[str(idx)] = seq
-                idx += 1
-        print(f"[MergedDataModule] Loaded {len(pcba_sequences)} sequences from ALL Lit-PCBA targets")
-        return pcba_sequences
-
-    def _load_pcba_target_sequences(self, target_name: str) -> dict:
-        """
-        Load sequences for a SINGLE Lit-PCBA target.
-        Returns dict[str_id] -> sequence.
-        """
-        path = self._seqdict_path()
-        target_sets = json.load(open(path))
-        if target_name not in target_sets:
-            raise KeyError(f"Target '{target_name}' not found in sequence dictionary: {path}")
-        pcba_sequences = {str(i): seq for i, seq in enumerate(target_sets[target_name])}
-        print(f"[MergedDataModule] Loaded {len(pcba_sequences)} sequences from target: {target_name}")
-        return pcba_sequences
-
-    def _iter_merged_sequences(self):
-        """Iterate through merged dataset sequences without filtering"""
-        for uid, seq in self.id_to_target.items():
-            yield uid, seq  
-
-    def _build_exclusion_with_mmseqs(self, eval_target_name: Optional[str], min_seq_id: float) -> Set[str]:
-        """
-        Build exclusion set using MMseqs2. If eval_target_name is None or "ALL",
-        build against the union of all Lit-PCBA targets; otherwise against a single target.
-        """
-        sel = None if eval_target_name is None else str(eval_target_name).strip()
-        use_all = (sel is None) or (sel.lower() in {"all", "*"})
-        pcba_sequences = self._load_pcba_all_sequences() if use_all else self._load_pcba_target_sequences(sel)
-
-        label = "ALL targets" if use_all else f"target '{sel}'"
-        print(f"[MergedDataModule] Building exclusion set against {label} at threshold {min_seq_id:.1%}")
-
-        with tempfile.TemporaryDirectory() as tmpd:
-            query_fasta = os.path.join(tmpd, "train_seqs.fasta") 
-            target_fasta = os.path.join(tmpd, "lit_pcba.fasta")    
-            output_tsv = os.path.join(tmpd, "similar_sequences.tsv")
-
-            with open(query_fasta, "w") as f:
-                for uid, seq in self._iter_merged_sequences():
-                    f.write(f">{uid}\n{seq}\n")
-
-            with open(target_fasta, "w") as f:
-                for seq_id, seq in pcba_sequences.items():
-                    f.write(f">{seq_id}\n{seq}\n")
-
-            commands = [
-                f"mmseqs createdb {query_fasta} {tmpd}/queryDB",
-                f"mmseqs createdb {target_fasta} {tmpd}/targetDB",
-                f"mmseqs search {tmpd}/queryDB {tmpd}/targetDB {tmpd}/resultDB {tmpd} -s 7.5 --max-seqs 10000 --min-seq-id {min_seq_id}",
-                f"mmseqs convertalis {tmpd}/queryDB {tmpd}/targetDB {tmpd}/resultDB {output_tsv}"
-            ]
-
-            try:
-                for cmd in commands:
-                    print(f"[MergedDataModule] Running: {cmd}")
-                    result = subprocess.run(cmd, shell=True, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-                    if result.returncode != 0:
-                        raise subprocess.CalledProcessError(result.returncode, cmd)
-            except FileNotFoundError:
-                raise RuntimeError("MMseqs2 not found on PATH")
-            except subprocess.CalledProcessError as e:
-                raise RuntimeError(f"MMseqs2 failed: {e.stderr.decode('utf-8', errors='ignore')}")
-
-            hits: Set[str] = set()
-            if os.path.exists(output_tsv):
-                with open(output_tsv) as f:
-                    for line in f:
-                        parts = line.strip().split("\t")
-                        if parts:
-                            merged_sequence_id = parts[0]
-                            hits.add(merged_sequence_id)
-
-        print(f"[MergedDataModule] Found {len(hits)} MERGED sequences ≥{min_seq_id:.1%} similar to {label}")
-        return hits
-
-
     def setup(self, stage: Optional[str] = None):
+        # Process drug and target databases if not already processed
+        # this stores featurizations for the given ligand ids and target ids into LMDB files
         smiles_lmdb = 'data/MERGED/huge_data/smiles.lmdb'
         target_lmdb = f'data/MERGED/huge_data/{self.target_featurizer.name}_targets.lmdb'
 
         self.drug_featurizer.process_merged_drugs(self.id_to_smiles)
         self.target_featurizer.process_merged_targets(self.id_to_target)
 
-        self.drug_db = px.Reader(dirpath=smiles_lmdb, lock=False)
+        self.drug_db = px.Reader(dirpath=smiles_lmdb, lock=False) # we only read
         self.target_db = px.Reader(dirpath=target_lmdb, lock=False)
 
         tdim = self.target_featurizer.shape
 
-        if self.ship_model:
-            # "Ship" mode: train on all + build exclusions using MMseqs2
-            exclusion_ids: Set[str] = self._build_exclusion_with_mmseqs(
-                eval_target_name=self.ship_model_target,
-                min_seq_id=self.ship_sim_threshold,
+        if self.ship_model: # Combine all data for final model, while excluding similar proteins
+            import json
+            import tempfile
+
+            # Load LIT-PCBA sequences
+            if self.target_featurizer.name == "SaProt":
+                pcba_seq_file = 'data/lit_pcba/saprot_sequence_dict.json'
+            else:
+                pcba_seq_file = 'data/lit_pcba/lit_pcba_sequence_dict.json'
+
+            pcba_sequences = json.load(open(pcba_seq_file))
+
+            # Determine which target sequences to use
+            if self.target_protein_id is None or self.target_protein_id.lower() == 'all':
+                # Combine all LIT-PCBA sequences
+                print(f"Computing sequence similarity for ALL LIT-PCBA proteins at threshold {self.similarity_threshold}")
+                all_target_seqs = []
+                for protein_id, seqs in pcba_sequences.items():
+                    if isinstance(seqs, list):
+                        all_target_seqs.extend(seqs)
+                    else:
+                        all_target_seqs.append(seqs)
+                target_seqs = all_target_seqs
+            else:
+                # Single protein
+                if self.target_protein_id not in pcba_sequences:
+                    raise ValueError(f"Target protein {self.target_protein_id} not found in LIT-PCBA dataset")
+
+                print(f"Computing sequence similarity for {self.target_protein_id} at threshold {self.similarity_threshold}")
+                target_seqs = pcba_sequences[self.target_protein_id]
+                if not isinstance(target_seqs, list):
+                    target_seqs = [target_seqs]
+
+            # Compute similar sequences on-the-fly
+            similar_ids = compute_similar_sequences_single_target(
+                target_seqs,
+                self.id_to_target,
+                threshold=self.similarity_threshold
             )
 
-            self.data_all = MergedDataset(
-                'all', self.drug_db, self.target_db, self.id_to_smiles, self.id_to_target,
-                tdim=tdim,
-                exclusion_ids=exclusion_ids
-            )
-            self.data_test = MergedDataset(
-                'test', self.drug_db, self.target_db, self.id_to_smiles, self.id_to_target,
-                tdim=tdim,
-                exclusion_ids=exclusion_ids
-            )
+            print(f"Found {len(similar_ids)} similar sequences to exclude")
+
+            # Write to temporary file
+            temp_file = tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.txt')
+            for uniprot_id in similar_ids:
+                temp_file.write(f"{uniprot_id}\n")
+            temp_file.close()
+            exclusion_file = temp_file.name
+
+            self.data_all = MergedDataset('all', self.drug_db, self.target_db, self.id_to_smiles, self.id_to_target, tdim=tdim, exclusion_file=exclusion_file)
+            self.data_test = MergedDataset('test', self.drug_db, self.target_db, self.id_to_smiles, self.id_to_target, tdim=tdim, exclusion_file=exclusion_file)
         else:
-            # Regular setup for train/val/test
+            # Regular setup for train/val/test (no exclusions)
             if stage == "fit" or stage is None:
                 self.data_train = MergedDataset('train', self.drug_db, self.target_db, self.id_to_smiles, self.id_to_target, tdim=tdim)
                 self.data_val = MergedDataset('val', self.drug_db, self.target_db, self.id_to_smiles, self.id_to_target, tdim=tdim)
