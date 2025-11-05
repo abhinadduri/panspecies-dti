@@ -1202,6 +1202,7 @@ class MergedDataset(Dataset):
         if exclusion_file is not None:
             for line in open(exclusion_file.strip()):
                 self.exclusion.add(line.strip())
+            print(f"[{split}] Loaded {len(self.exclusion)} proteins to exclude from exclusion file")
 
         # Load positive and negative interactions
         if split == 'all':
@@ -1219,6 +1220,18 @@ class MergedDataset(Dataset):
         else:
             self.pos_data = pd.read_csv(f'data/MERGED/huge_data/merged_pos_uniq_{split}_rand.tsv', sep='\t')
             self.neg_data = pd.read_csv(f'data/MERGED/huge_data/merged_neg_uniq_{split}_rand.tsv', sep='\t')
+
+        # Count how many data points contain excluded proteins
+        if self.exclusion:
+            pos_excluded = self.pos_data['aa_seq'].isin(self.exclusion).sum()
+            neg_excluded = self.neg_data['aa_seq'].isin(self.exclusion).sum()
+            total_pos = len(self.pos_data)
+            total_neg = len(self.neg_data)
+
+            print(f"\n[{split}] Data exclusion statistics:")
+            print(f"  Positive interactions: {pos_excluded}/{total_pos} ({pos_excluded/total_pos*100:.2f}%) contain excluded proteins")
+            print(f"  Negative interactions: {neg_excluded}/{total_neg} ({neg_excluded/total_neg*100:.2f}%) contain excluded proteins")
+            print(f"  Total interactions affected: {pos_excluded + neg_excluded}/{total_pos + total_neg} ({(pos_excluded + neg_excluded)/(total_pos + total_neg)*100:.2f}%)\n")
         
         # Receive drug and target db's from the datamodule. we assume that concurrent reads are ok
         self.drug_db = drug_db
@@ -1398,13 +1411,25 @@ class MergedDataModule(pl.LightningDataModule):
                     target_seqs = [target_seqs]
 
             # Compute similar sequences on-the-fly
+            total_train_sequences = len(self.id_to_target)
+            print(f"\n{'='*60}")
+            print(f"MMseqs2 Dataset Filtering Statistics")
+            print(f"{'='*60}")
+            print(f"Total training sequences: {total_train_sequences}")
+
             similar_ids = compute_similar_sequences_single_target(
                 target_seqs,
                 self.id_to_target,
                 threshold=self.similarity_threshold
             )
 
-            print(f"Found {len(similar_ids)} similar sequences to exclude")
+            num_excluded = len(similar_ids)
+            exclusion_percentage = (num_excluded / total_train_sequences) * 100 if total_train_sequences > 0 else 0
+
+            print(f"Similar sequences found (>={self.similarity_threshold} threshold): {num_excluded}")
+            print(f"Sequences to exclude: {num_excluded} ({exclusion_percentage:.2f}%)")
+            print(f"Remaining sequences: {total_train_sequences - num_excluded} ({100 - exclusion_percentage:.2f}%)")
+            print(f"{'='*60}\n")
 
             # Write to temporary file
             temp_file = tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.txt')
