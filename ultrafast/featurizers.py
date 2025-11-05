@@ -85,7 +85,13 @@ class Featurizer:
         if seq not in self.features:
             self._features[seq] = self.transform(seq)
 
-        return self._features[seq]
+        feats = self._features[seq]
+        if self._moltype == "target" and 'cls' in feats:
+            return torch.cat([feats['cls'][np.newaxis,...], feats['feats']], dim=0)
+        elif self._moltype == "drug":
+            return feats
+        else:
+            raise ValueError(f"Sequence {seq} does not have a 'cls' token saved")
 
     def _register_cuda(self, k: str, v, f=None):
         """
@@ -320,7 +326,7 @@ class Featurizer:
             feats = self.transform(batch_seq)
             if isinstance(feats, dict):
                 cls = feats['cls']
-                feats = feats['sequence']
+                feats = feats['feats']
 
             if self.moltype == "drug":
                 db.put_samples('ids', batch_ids, 'feats', feats.numpy())
@@ -552,15 +558,15 @@ class ProtBertFeaturizer(Featurizer):
         embeddings = self._protbert_model(input_ids=input_ids, attention_mask=attention_mask)
         embeddings = embeddings.last_hidden_state.detach().cpu()
 
-        results = dict(sequence=[], cls=[])
+        results = dict(feats=[], cls=[])
         for i, seq in enumerate(seqs):
             seq_len = len(seq)
             start_idx = 1
             end_idx = seq_len + 1
             feats = embeddings[i].squeeze()[start_idx:end_idx]
-            cls = embeddings[i].squeee()[0]
+            cls = embeddings[i].squeeze()[0]
             
-            results['sequence'].append(feats)
+            results['feats'].append(feats)
             results['cls'].append(cls)
 
         return results
@@ -718,11 +724,11 @@ class SaProtFeaturizer(Featurizer):
                 results = self.model(batch_tokens, repr_layers=[33], return_contacts=False)
             token_embeddings = results["representations"][33].detach().cpu()
 
-            return {'sequence':token_embeddings[0, 1:batch_lens -1].squeeze(0), 'cls':token_embeddings[0,0].squeeze(0)}  # Return the full sequence embedding
+            return {'feats':token_embeddings[0, 1:batch_lens -1].squeeze(0), 'cls':token_embeddings[0,0].squeeze(0)}  # Return the full sequence embedding
         except Exception as e:
             print(f"Error featurizing single sequence: {seq}")
             if isinstance(seq, str):
-                return {'sequence':torch.zeros((len(seq)//2, self.shape)), 'cls':torch.zeros((1,self.shape))} # zero vector for each token
+                return {'feats':torch.zeros((len(seq)//2, self.shape)), 'cls':torch.zeros((1,self.shape))} # zero vector for each token
             else:
                 return torch.zeros((1, self.shape))
 
@@ -741,7 +747,7 @@ class SaProtFeaturizer(Featurizer):
 
             results = dict(sequence=[], cls=[])
             for i, token_lens in enumerate(batch_lens):
-                results['sequence'].append(token_embeddings[i, 1:token_lens -1].squeeze(0))
+                results['feats'].append(token_embeddings[i, 1:token_lens -1].squeeze(0))
                 results['cls'].append(token_embeddings[i, 0].squeeze(0))
         except RuntimeError as e:
             if "CUDA out of memory" in str(e):
@@ -756,7 +762,7 @@ class SaProtFeaturizer(Featurizer):
         if isinstance(results, list):
             res = dict(sequence=[], cls=[])
             for d in res:
-                res['sequence'].append(d['sequence'])
+                res['feats'].append(d['feats'])
                 res['cls'].append(d['cls'])
             results = res
         

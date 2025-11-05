@@ -66,7 +66,6 @@ def embed_collate_fn(args: T.Tuple[torch.Tensor, torch.Tensor], moltype="target"
     if isinstance(args[0],list):
         args = [a[0] for a in args]
 
-
     if moltype == "drug":
         mols = torch.stack(args, 0)
     elif moltype == "target":
@@ -282,9 +281,17 @@ class EmbedDataset(Dataset):
     def __getitem__(self, i):
         if self.db is None:
             seq = self.featurizer.prepare_string(self.data[self._column].iloc[i])
-            mol = self.featurizer.features[seq]
+            item = self.featurizer.features[seq]
         else:
-            mol = torch.from_numpy(self.db[i]['feats'])
+            item = self.db[i]
+
+            if self.moltype == "drug":
+                item = torch.from_numpy(item['feats'])
+        if self.moltype == "target":
+            mol = torch.from_numpy(np.concatenate([item['cls'][0][np.newaxis,...],item['feats'][0]], axis=0))
+        else:
+            mol = item
+
 
 
         return mol
