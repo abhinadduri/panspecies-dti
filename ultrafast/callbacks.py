@@ -141,7 +141,6 @@ def eval_pcba(trainer, model, pcba_dir='data/lit_pcba', target_protein_id=None):
                 f"pcba/{target}/EF_0.05": efs[2],
             }, step=trainer.global_step)
         
-
     # Calculate and log average metrics
     avg_auroc = np.mean(all_aurocs)
     avg_bedroc = np.mean(all_bedrocs)
@@ -155,7 +154,6 @@ def eval_pcba(trainer, model, pcba_dir='data/lit_pcba', target_protein_id=None):
             "pcba/avg_EF_0.01": avg_efs[0.01],
             "pcba/avg_EF_0.05": avg_efs[0.05],
         }, step=trainer.global_step)
-
 
     print(f"Average EF: {avg_efs}")
     print(f"Average BEDROC_85: {avg_bedroc:.3f}")
