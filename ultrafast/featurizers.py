@@ -481,8 +481,7 @@ class CLAMPFeaturizer(Featurizer):
     def __init__(self, shape: int = 768, save_dir: Path = Path().absolute(), ext: str = "lmdb", batch_size: int = 32, **kwargs):
         super().__init__("CLAMP", shape, "drug", save_dir, ext, batch_size, **kwargs)
 
-        self._device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
-        self._model = clamp.CLAMP(device=self._device)
+        self._model = clamp.CLAMP(device="cpu")
         self._model.eval()
 
     def _transform(self, batch_smiles: List[str]) -> torch.Tensor:
