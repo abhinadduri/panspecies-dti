@@ -155,7 +155,5 @@ def eval_pcba(trainer, model, pcba_dir='data/lit_pcba', target_protein_id=None):
             "pcba/avg_EF_0.05": avg_efs[0.05],
         }, step=trainer.global_step)
 
-    print(f"Average EF: {avg_efs}")
-    print(f"Average BEDROC_85: {avg_bedroc:.3f}")
-    print(f"Average AUROC: {avg_auroc:.3f}")
+
 
