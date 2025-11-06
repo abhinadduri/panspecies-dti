@@ -64,7 +64,7 @@ Adding ``--eval-pcba`` can show the performance on the Lit-PCBA dataset after ep
 ### Single Lit-PCBA
 ```
 # Setup MMseq2
-`conda install -c conda-forge -c bioconda mmseqs2`
+conda install -c conda-forge -c bioconda mmseqs2
 # Running Single Lit-PCBA
 ultrafast-train --exp-id LitPCBA --config configs/saprot_agg_config.yaml --task merged --epochs 15 --ship-model --model-size large --target-protein-id {TARGET} --similarity-threshold {THRESHOLD} --eval-pcba 
 ```
