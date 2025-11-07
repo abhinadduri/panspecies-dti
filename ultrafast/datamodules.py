@@ -18,7 +18,7 @@ from sklearn.model_selection import KFold, train_test_split
 from tdc.benchmark_group import dti_dg_group
 from torch.utils.data import Dataset, DataLoader
 from torch.nn.utils.rnn import pad_sequence
-from typing import Optional
+from typing import Optional, Set
 from ultrafast.featurizers import Featurizer
 from ultrafast.tdc_utils import compute_ESM_features, get_saprot_seq
 
@@ -1172,13 +1172,15 @@ class LeashDataModule(pl.LightningDataModule):
             )
 
 class MergedDataset(Dataset):
-    def __init__(self, split, drug_db, target_db, id_to_smiles, id_to_target, tdim=1280, exclusion_file=None, neg_sample_ratio=3):
+    def __init__(self, split, drug_db, target_db, id_to_smiles, id_to_target, tdim=1280,
+                 exclusion_ids: Optional[Set[str]] = None, neg_sample_ratio=3):
         """
         Constructor for the merged dataset, pooling DTI data from PubChem, BindingDB, and ChEMBL.
 
         `split`: one of 'train', 'test', or 'val'
         `drug_db`: a reference to the LMDB database of ligands that supports this dataset.
         `target_db`: a reference to the LMDB database of targets that supports this dataset.
+        `exclusion_ids`: Optional set of protein IDs to exclude from the dataset
         """
         self.split = split
         self.neg_sample_ratio = neg_sample_ratio
@@ -1208,12 +1210,11 @@ class MergedDataset(Dataset):
         self.id_to_drug_lmdb = {db_id: lmdb_id for lmdb_id, db_id in enumerate(self.id_to_smiles.keys())}
         self.id_to_prot_lmdb = {db_id: lmdb_id for lmdb_id, db_id in enumerate(id_list)}
 
-        # Exclude some ID's for homology based analysis
-        self.exclusion = set()
-        if exclusion_file is not None:
-            for line in open(exclusion_file.strip()):
-                self.exclusion.add(line.strip())
-            print(f"Loaded {len(self.exclusion)} protein IDs from exclusion file for homology-based filtering")
+        # Store exclusion set
+        self.exclusion: Set[str] = set()
+        if exclusion_ids is not None:
+            self.exclusion.update(exclusion_ids)
+            print(f"Loaded {len(self.exclusion)} protein IDs from exclusion set for homology-based filtering")
 
         # Load positive and negative interactions
         if split == 'all':
@@ -1222,16 +1223,25 @@ class MergedDataset(Dataset):
             pos_data_train = pd.read_csv('data/MERGED/huge_data/merged_pos_uniq_train_rand.tsv', sep='\t')
             pos_data_val = pd.read_csv('data/MERGED/huge_data/merged_pos_uniq_val_rand.tsv', sep='\t')
             pos_data_test = pd.read_csv('data/MERGED/huge_data/merged_pos_uniq_test_rand.tsv', sep='\t')
-            self.pos_data = pd.concat([pos_data_train, pos_data_val, pos_data_test])
+            self.pos_data = pd.concat([pos_data_train, pos_data_val, pos_data_test], ignore_index=True)
 
             neg_data_train = pd.read_csv('data/MERGED/huge_data/merged_neg_uniq_train_rand.tsv', sep='\t')
             neg_data_val = pd.read_csv('data/MERGED/huge_data/merged_neg_uniq_val_rand.tsv', sep='\t')
             neg_data_test = pd.read_csv('data/MERGED/huge_data/merged_neg_uniq_test_rand.tsv', sep='\t')
-            self.neg_data = pd.concat([neg_data_train, neg_data_val, neg_data_test])
+            self.neg_data = pd.concat([neg_data_train, neg_data_val, neg_data_test], ignore_index=True)
         else:
             self.pos_data = pd.read_csv(f'data/MERGED/huge_data/merged_pos_uniq_{split}_rand.tsv', sep='\t')
             self.neg_data = pd.read_csv(f'data/MERGED/huge_data/merged_neg_uniq_{split}_rand.tsv', sep='\t')
-        
+
+        # CRITICAL FIX: Filter out excluded proteins from the dataset
+        if self.split == 'all' and len(self.exclusion) > 0:
+            bp, bn = len(self.pos_data), len(self.neg_data)
+            self.pos_data = self.pos_data[~self.pos_data['aa_seq'].isin(self.exclusion)].reset_index(drop=True)
+            self.neg_data = self.neg_data[~self.neg_data['aa_seq'].isin(self.exclusion)].reset_index(drop=True)
+            ap, an = len(self.pos_data), len(self.neg_data)
+            print(f"[MergedDataset] Hard-removed excluded proteins for ship-mode: "
+                  f"pos {bp}->{ap}, neg {bn}->{an} (removed {bp-ap + bn-an} rows)")
+
         # Receive drug and target db's from the datamodule. we assume that concurrent reads are ok
         self.drug_db = drug_db
         self.target_db = target_db
@@ -1258,7 +1268,7 @@ class MergedDataset(Dataset):
     def __getitem__(self, idx):
         """
         Get an item from this dataset by idx.
-        If the idx is less than the size of the positive data, we return the positive example. 
+        If the idx is less than the size of the positive data, we return the positive example.
         Otherwise return a negative example.
         """
         if idx < len(self.pos_data):
@@ -1270,31 +1280,24 @@ class MergedDataset(Dataset):
 
         drug_id, aa_id = interaction['ligand'], interaction['aa_seq']
 
-        # aa_id is the uniprot id, simply check and see if this is blacklisted under mmseq threshold.
-        drug_id = self.id_to_drug_lmdb[drug_id]
-        drug_features = self.drug_db[drug_id]['feats']
+        # Fetch drug features
+        drug_lmdb_idx = self.id_to_drug_lmdb[drug_id]
+        drug_features = self.drug_db[drug_lmdb_idx]['feats']
 
-        # if the uniprot id is to be excluded for homology analysis
-        if self.split == 'all' and aa_id in self.exclusion:
-            drug_features = np.zeros(drug_features.shape, dtype=np.float32)
-            # if this is not ProtBert...
+        # Fetch target features
+        if aa_id not in self.id_to_prot_lmdb:
             target_features = np.zeros((1, self.tdim), dtype=np.float32)
         else:
-            if aa_id not in self.id_to_prot_lmdb: # if the uniprot id is not in the map
-                target_features = np.zeros((1, self.tdim), dtype=np.float32)
+            target_entry = self.target_db[self.id_to_prot_lmdb[aa_id]]
+            if aa_id in target_entry:
+                target_features = target_entry[aa_id]
             else:
-                target_entry = self.target_db[self.id_to_prot_lmdb[aa_id]]
+                target_features = np.zeros((1, self.tdim), dtype=np.float32)
 
-                if aa_id in target_entry:
-                    target_features = target_entry[aa_id]
-                else:
-                    target_features = np.zeros((1, self.tdim), dtype=np.float32)
-
-        # Fetch the drug and target feature for this idx from LMDB
         return (
-            torch.from_numpy(drug_features), # drug
-            torch.from_numpy(target_features), # target
-            torch.tensor(label, dtype=torch.float32) # label
+            torch.from_numpy(drug_features),
+            torch.from_numpy(target_features),
+            torch.tensor(label, dtype=torch.float32)
         )
 
     def on_epoch_end(self):
@@ -1382,7 +1385,6 @@ class MergedDataModule(pl.LightningDataModule):
 
         if self.ship_model: # Combine all data for final model, while excluding similar proteins
             import json
-            import tempfile
 
             # Load LIT-PCBA sequences
             if self.target_featurizer.name == "SaProt":
@@ -1424,15 +1426,11 @@ class MergedDataModule(pl.LightningDataModule):
             print(f"Found {len(similar_ids)} similar sequences to exclude (out of {len(self.id_to_target)} total training sequences)")
             print(f"Exclusion rate: {100.0 * len(similar_ids) / len(self.id_to_target):.2f}%")
 
-            # Write to temporary file
-            temp_file = tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.txt')
-            for uniprot_id in similar_ids:
-                temp_file.write(f"{uniprot_id}\n")
-            temp_file.close()
-            exclusion_file = temp_file.name
+            # Pass exclusion_ids directly as a set (no temporary file needed)
+            exclusion_ids: Set[str] = similar_ids
 
-            self.data_all = MergedDataset('all', self.drug_db, self.target_db, self.id_to_smiles, self.id_to_target, tdim=tdim, exclusion_file=exclusion_file)
-            self.data_test = MergedDataset('test', self.drug_db, self.target_db, self.id_to_smiles, self.id_to_target, tdim=tdim, exclusion_file=exclusion_file)
+            self.data_all = MergedDataset('all', self.drug_db, self.target_db, self.id_to_smiles, self.id_to_target, tdim=tdim, exclusion_ids=exclusion_ids)
+            self.data_test = MergedDataset('test', self.drug_db, self.target_db, self.id_to_smiles, self.id_to_target, tdim=tdim, exclusion_ids=exclusion_ids)
         else:
             # Regular setup for train/val/test (no exclusions)
             if stage == "fit" or stage is None:
