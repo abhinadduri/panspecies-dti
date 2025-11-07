@@ -332,11 +332,13 @@ def train(
         wandb_logger.experiment.tags = [config.task, config.experiment_id, config.target_featurizer, config.model_size]
 
     if config.task == 'merged' and args.ship_model:
-        # save every epoch
         checkpoint_callback = pl.callbacks.ModelCheckpoint(
+            monitor=config.watch_metric,
+            mode="max" if "mse" not in config.watch_metric else "min",
             save_top_k=-1,
             dirpath=save_dir,
-            verbose=True
+            verbose=True,
+            every_n_epochs=1,
         )
     else:
         checkpoint_callback = pl.callbacks.ModelCheckpoint(

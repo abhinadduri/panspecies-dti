@@ -13,7 +13,7 @@ from functools import partial
 from sklearn.metrics.pairwise import cosine_similarity
 from torch.utils.data import Dataset, DataLoader
 from ultrafast.datamodules import EmbedInMemoryDataset, embed_collate_fn
-from ultrafast.utils import get_featurizer, CalcAUC, CalcBEDROC, CalcEnrichment, CalcAUPR
+from ultrafast.utils import get_featurizer, CalcAUC, CalcBEDROC, CalcEnrichment
 
 def eval_pcba(trainer, model, pcba_dir='data/lit_pcba', target_protein_id=None):
     """
@@ -30,7 +30,6 @@ def eval_pcba(trainer, model, pcba_dir='data/lit_pcba', target_protein_id=None):
 
     all_targets = []
     all_aurocs = []
-    all_auprs = []
     all_bedrocs = []
     all_efs = {0.005: [], 0.01: [], 0.05: []}
 
@@ -126,10 +125,9 @@ def eval_pcba(trainer, model, pcba_dir='data/lit_pcba', target_protein_id=None):
         # Sort scores in descending order of similarity
         scores.sort(key=lambda x: x[0], reverse=True)
 
-        # Calculate BEDROC_85, AUROC, AUPR, and EF
+        # Calculate BEDROC_85, AUROC, and EF
         bedroc = CalcBEDROC(scores, 1, 85.0)
         auroc = CalcAUC(scores, 1)
-        aupr = CalcAUPR(scores, 1)
         efs = CalcEnrichment(scores, 1, [0.005, 0.01, 0.05])
 
         all_targets.append(target)
@@ -137,26 +135,22 @@ def eval_pcba(trainer, model, pcba_dir='data/lit_pcba', target_protein_id=None):
             all_efs[list(all_efs.keys())[i]].append(ef)
         all_bedrocs.append(bedroc)
         all_aurocs.append(auroc)
-        all_auprs.append(aupr)
 
         # Log individual target metrics
         if hasattr(model, "log"):
             model.log(f"pcba/{target}/AUROC", auroc, on_epoch=True, prog_bar=False, logger=True)
-            model.log(f"pcba/{target}/AUPR", aupr, on_epoch=True, prog_bar=False, logger=True)
             model.log(f"pcba/{target}/BEDROC_85", bedroc, on_epoch=True, prog_bar=False, logger=True)
             model.log(f"pcba/{target}/EF_0.005", efs[0], on_epoch=True, prog_bar=False, logger=True)
             model.log(f"pcba/{target}/EF_0.01", efs[1], on_epoch=True, prog_bar=False, logger=True)
             model.log(f"pcba/{target}/EF_0.05", efs[2], on_epoch=True, prog_bar=False, logger=True)
         
     avg_auroc = np.mean(all_aurocs)
-    avg_aupr = np.mean(all_auprs)
     avg_bedroc = np.mean(all_bedrocs)
     avg_efs = {k: np.mean(v) for k, v in all_efs.items()}
 
     if len(target_folders) > 1:
         if hasattr(model, "log"):
             model.log("pcba/avg_AUROC", avg_auroc, on_epoch=True, prog_bar=True, logger=True)
-            model.log("pcba/avg_AUPR", avg_aupr, on_epoch=True, prog_bar=False, logger=True)
             model.log("pcba/avg_BEDROC_85", avg_bedroc, on_epoch=True, prog_bar=False, logger=True)
             model.log("pcba/avg_EF_0.005", avg_efs[0.005], on_epoch=True, prog_bar=False, logger=True)
             model.log("pcba/avg_EF_0.01", avg_efs[0.01], on_epoch=True, prog_bar=False, logger=True)
@@ -165,4 +159,3 @@ def eval_pcba(trainer, model, pcba_dir='data/lit_pcba', target_protein_id=None):
         print(f"Average EF: {avg_efs}")
         print(f"Average BEDROC_85: {avg_bedroc:.3f}")
         print(f"Average AUROC: {avg_auroc:.3f}")
-        print(f"Average AUPR: {avg_aupr:.3f}")
