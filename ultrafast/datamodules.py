@@ -1200,9 +1200,6 @@ class MergedDataset(Dataset):
                 continue
             id_list.append(k)
 
-        sequences_with_digits = original_count - len(id_list)
-        print(f"Excluded {sequences_with_digits} sequences containing digits (out of {original_count} total)")
-
         self.id_to_target = {k: self.id_to_target[k] for k in id_list}
         self.id_list = id_list
 
@@ -1350,9 +1347,6 @@ class MergedDataModule(pl.LightningDataModule):
             if any(char.isdigit() for char in self.id_to_target[k]):
                 continue
             id_list.append(k)
-
-        sequences_with_digits = original_count - len(id_list)
-        print(f"Excluded {sequences_with_digits} sequences containing digits (out of {original_count} total)")
 
         self.id_to_target = {k: self.id_to_target[k] for k in id_list}
         self.id_list = id_list
