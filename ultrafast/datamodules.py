@@ -51,7 +51,7 @@ def get_task_dir(task_name: str):
 
     return Path(task_paths[task_name.lower()]).resolve()
 
-def compute_similar_sequences_single_target(target_sequence, train_sequences, threshold=0.9, tmp_dir='tmp_mmseqs'):
+def compute_similar_sequences_single_target(target_sequence, train_sequences, threshold=0.9, tmp_dir='tmp_mmseqs', threads=64):
     """
     Compute sequence similarity for target protein(s) against training sequences using MMSeqs2.
 
@@ -66,11 +66,14 @@ def compute_similar_sequences_single_target(target_sequence, train_sequences, th
     """
     import subprocess
     import tempfile
+    import uuid
 
-    os.makedirs(tmp_dir, exist_ok=True)
+    # Create a unique subdirectory to avoid conflicts between concurrent runs
+    unique_tmp_dir = os.path.join(tmp_dir, f"run_{uuid.uuid4().hex[:16]}")
+    os.makedirs(unique_tmp_dir, exist_ok=True)
 
     # Create temporary FASTA files
-    with tempfile.NamedTemporaryFile(mode='w', suffix='.fasta', delete=False, dir=tmp_dir) as target_fasta:
+    with tempfile.NamedTemporaryFile(mode='w', suffix='.fasta', delete=False, dir=unique_tmp_dir) as target_fasta:
         # Handle single sequence or list of sequences
         if isinstance(target_sequence, list):
             for idx, seq in enumerate(target_sequence):
@@ -79,25 +82,30 @@ def compute_similar_sequences_single_target(target_sequence, train_sequences, th
             target_fasta.write(f">target\n{target_sequence}\n")
         target_fasta_path = target_fasta.name
 
-    with tempfile.NamedTemporaryFile(mode='w', suffix='.fasta', delete=False, dir=tmp_dir) as train_fasta:
+    with tempfile.NamedTemporaryFile(mode='w', suffix='.fasta', delete=False, dir=unique_tmp_dir) as train_fasta:
         for seq_id, seq in train_sequences.items():
             train_fasta.write(f">{seq_id}\n{seq}\n")
         train_fasta_path = train_fasta.name
 
     # Create output file path
-    output_file = os.path.join(tmp_dir, 'similar_sequences.tsv')
+    output_file = os.path.join(unique_tmp_dir, 'similar_sequences.tsv')
 
     try:
-        # Run MMSeqs2
+        # Run MMSeqs2 with unique temp directory and explicit threading
         commands = [
-            f"mmseqs createdb {train_fasta_path} {tmp_dir}/queryDB",
-            f"mmseqs createdb {target_fasta_path} {tmp_dir}/targetDB",
-            f"mmseqs search {tmp_dir}/queryDB {tmp_dir}/targetDB {tmp_dir}/resultDB {tmp_dir} -s 7.5 --min-seq-id {threshold}",
-            f"mmseqs convertalis {tmp_dir}/queryDB {tmp_dir}/targetDB {tmp_dir}/resultDB {output_file}"
+            f"mmseqs createdb {train_fasta_path} {unique_tmp_dir}/queryDB",
+            f"mmseqs createdb {target_fasta_path} {unique_tmp_dir}/targetDB",
+            f"mmseqs search {unique_tmp_dir}/queryDB {unique_tmp_dir}/targetDB {unique_tmp_dir}/resultDB {unique_tmp_dir}/tmp -s 7.5 --min-seq-id {threshold} --threads {threads}",
+            f"mmseqs convertalis {unique_tmp_dir}/queryDB {unique_tmp_dir}/targetDB {unique_tmp_dir}/resultDB {output_file}"
         ]
 
         for cmd in commands:
-            subprocess.run(cmd, shell=True, check=True, capture_output=True)
+            result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
+            if result.returncode != 0:
+                print(f"Command failed: {cmd}")
+                print(f"STDOUT: {result.stdout}")
+                print(f"STDERR: {result.stderr}")
+                raise subprocess.CalledProcessError(result.returncode, cmd, result.stdout, result.stderr)
 
         # Process results
         similar_ids = set()
@@ -110,9 +118,8 @@ def compute_similar_sequences_single_target(target_sequence, train_sequences, th
         return similar_ids
 
     finally:
-        # Clean up temporary files
-        for pattern in ['queryDB*', 'targetDB*', 'resultDB*', target_fasta_path, train_fasta_path, output_file]:
-            subprocess.run(f"rm -f {tmp_dir}/{pattern} 2>/dev/null || true", shell=True)
+        # Clean up the entire unique temporary directory
+        subprocess.run(f"rm -rf {unique_tmp_dir} 2>/dev/null || true", shell=True)
 
 def embed_collate_fn(args: T.Tuple[torch.Tensor, torch.Tensor], moltype="target"):
     """
@@ -1185,10 +1192,14 @@ class MergedDataset(Dataset):
         self.tdim = tdim
 
         id_list = []
+        original_count = len(self.id_to_target.keys())
         for k in list(self.id_to_target.keys()):
             if any(char.isdigit() for char in self.id_to_target[k]):
                 continue
             id_list.append(k)
+
+        sequences_with_digits = original_count - len(id_list)
+        print(f"Excluded {sequences_with_digits} sequences containing digits (out of {original_count} total)")
 
         self.id_to_target = {k: self.id_to_target[k] for k in id_list}
         self.id_list = id_list
@@ -1202,6 +1213,7 @@ class MergedDataset(Dataset):
         if exclusion_file is not None:
             for line in open(exclusion_file.strip()):
                 self.exclusion.add(line.strip())
+            print(f"Loaded {len(self.exclusion)} protein IDs from exclusion file for homology-based filtering")
 
         # Load positive and negative interactions
         if split == 'all':
@@ -1330,10 +1342,14 @@ class MergedDataModule(pl.LightningDataModule):
             self.id_to_target = np.load('data/MERGED/huge_data/id_to_sequence.npy', allow_pickle=True).item()
 
         id_list = []
+        original_count = len(self.id_to_target.keys())
         for k in list(self.id_to_target.keys()):
             if any(char.isdigit() for char in self.id_to_target[k]):
                 continue
             id_list.append(k)
+
+        sequences_with_digits = original_count - len(id_list)
+        print(f"Excluded {sequences_with_digits} sequences containing digits (out of {original_count} total)")
 
         self.id_to_target = {k: self.id_to_target[k] for k in id_list}
         self.id_list = id_list
@@ -1398,13 +1414,15 @@ class MergedDataModule(pl.LightningDataModule):
                     target_seqs = [target_seqs]
 
             # Compute similar sequences on-the-fly
+            print(f"Computing sequence similarity against {len(target_seqs)} target sequence(s) from {len(self.id_to_target)} training sequences...")
             similar_ids = compute_similar_sequences_single_target(
                 target_seqs,
                 self.id_to_target,
                 threshold=self.similarity_threshold
             )
 
-            print(f"Found {len(similar_ids)} similar sequences to exclude")
+            print(f"Found {len(similar_ids)} similar sequences to exclude (out of {len(self.id_to_target)} total training sequences)")
+            print(f"Exclusion rate: {100.0 * len(similar_ids) / len(self.id_to_target):.2f}%")
 
             # Write to temporary file
             temp_file = tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.txt')

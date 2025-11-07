@@ -25,7 +25,7 @@ def eval_pcba(trainer, model, pcba_dir='data/lit_pcba', target_protein_id=None):
         trainer: PyTorch Lightning trainer
         model: Model to evaluate
         pcba_dir: Directory containing Lit-PCBA dataset
-        target_protein_id: Optional protein ID to evaluate. If None, evaluate all proteins.
+        target_protein_id: Optional protein ID to evaluate. If None or "all", evaluate all proteins.
     """
 
     all_targets = []
@@ -33,15 +33,20 @@ def eval_pcba(trainer, model, pcba_dir='data/lit_pcba', target_protein_id=None):
     all_bedrocs = []
     all_efs = {0.005: [], 0.01: [], 0.05: []}
 
-    for target_folder in glob.glob(f'{pcba_dir}/*'):
+    # Decide which target folders to evaluate
+    if target_protein_id is None or str(target_protein_id).lower() == "all":
+        target_folders = [f for f in glob.glob(f'{pcba_dir}/*') if os.path.isdir(f)]
+    else:
+        target_folder = os.path.join(pcba_dir, target_protein_id)
+        if not os.path.isdir(target_folder):
+            raise ValueError(f"Target protein {target_protein_id} not found in {pcba_dir}")
+        target_folders = [target_folder]
+
+    for target_folder in target_folders:
         if not os.path.isdir(target_folder):
             continue
 
         target = target_folder.split('/')[-1]
-
-        # Filter by target_protein_id if specified
-        if target_protein_id is not None and target != target_protein_id:
-            continue
         out_dir = f'{pcba_dir}/{target}'
 
         # Get the SMILES data file for this target
@@ -99,8 +104,8 @@ def eval_pcba(trainer, model, pcba_dir='data/lit_pcba', target_protein_id=None):
         target_embeddings = []
         with torch.no_grad():
             for seqs in tqdm(dataloader, desc="Embedding", total=len(dataloader)):
-                seqs =seqs .to(device)
-                emb = model.embed(seqs , sample_type='target')
+                seqs = seqs.to(device)
+                emb = model.embed(seqs, sample_type='target')
                 target_embeddings.append(emb.cpu().numpy())
         target_embeddings = np.concatenate(target_embeddings, axis=0)
 
@@ -158,4 +163,3 @@ def eval_pcba(trainer, model, pcba_dir='data/lit_pcba', target_protein_id=None):
     print(f"Average EF: {avg_efs}")
     print(f"Average BEDROC_85: {avg_bedroc:.3f}")
     print(f"Average AUROC: {avg_auroc:.3f}")
-
