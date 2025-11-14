@@ -150,14 +150,12 @@ def eval_pcba(trainer, model, pcba_dir='data/lit_pcba', target_protein_id=None):
     avg_bedroc = np.mean(all_bedrocs)
     avg_efs = {k: np.mean(v) for k, v in all_efs.items()}
 
-    if len(target_folders) > 1 and trainer.logger and hasattr(trainer.logger, "experiment"):
-        trainer.logger.experiment.log({
-            "pcba/avg_AUROC": avg_auroc,
-            "pcba/avg_BEDROC_85": avg_bedroc,
-            "pcba/avg_EF_0.005": avg_efs[0.005],
-            "pcba/avg_EF_0.01": avg_efs[0.01],
-            "pcba/avg_EF_0.05": avg_efs[0.05],
-        }, step=trainer.global_step)
+    # Log average metrics for multiple targets only
+    if len(target_folders) > 1 and hasattr(model, "log"):
+        model.log("pcba/avg_AUROC", avg_auroc, on_epoch=True, prog_bar=True, logger=True)
+        model.log("pcba/avg_BEDROC_85", avg_bedroc, on_epoch=True, prog_bar=False, logger=True)
+        for k, v in sorted(avg_efs.items()):
+            model.log(f"pcba/avg_EF_{k}", v, on_epoch=True, prog_bar=False, logger=True)
 
         print(f"Average EF: {avg_efs}")
         print(f"Average BEDROC_85: {avg_bedroc:.3f}")
