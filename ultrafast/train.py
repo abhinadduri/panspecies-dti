@@ -29,8 +29,12 @@ from ultrafast.drug_only_model import DrugOnlyLightning
 from ultrafast.utils import get_featurizer, xavier_normal
 
 class PCBAEvaluationCallback(Callback):
+    def __init__(self, target_protein_id=None):
+        super().__init__()
+        self.target_protein_id = target_protein_id
+
     def on_validation_epoch_end(self, trainer, pl_module):
-        eval_pcba(trainer, pl_module)
+        eval_pcba(trainer, pl_module, target_protein_id=self.target_protein_id)
 
 def train_cli():
     parser = argparse.ArgumentParser(description="PLM_DTI Training.")
@@ -71,7 +75,9 @@ def train_cli():
     parser.add_argument("--num-workers", type=int, default=0, help="number of workers for intial data processing and dataloading during training")
     parser.add_argument("--no-wandb", action="store_true", help="Do not use wandb")
     parser.add_argument("--model-size", default="small", choices=["small", "large"], help="Choose the size of the model")
-    parser.add_argument("--ship-model", help="Train a final to ship model, while excluding the uniprot id's specified by this argument.", dest="ship_model")
+    parser.add_argument("--ship-model", action="store_true", help="Train a final to ship model, while excluding similar proteins based on sequence similarity.", dest="ship_model")
+    parser.add_argument("--similarity-threshold", type=float, default=0.9, help="Sequence similarity threshold for filtering (0.0-1.0)", dest="similarity_threshold")
+    parser.add_argument("--target-protein-id", type=str, default=None, help="Target protein ID to evaluate/filter ('all' for all proteins, or specific protein name)", dest="target_protein_id")
     parser.add_argument("--eval-pcba", action="store_true", help="Evaluate PCBA during validation")
     parser.add_argument("--sigmoid-scalar", type=int, default=5, dest="sigmoid_scalar")
 
@@ -105,7 +111,9 @@ def train(
     no_wandb: bool,
     num_heads_agg: int,
     model_size: str,
-    ship_model: str,
+    ship_model: bool,
+    similarity_threshold: float,
+    target_protein_id: str,
     eval_pcba: bool,
     sigmoid_scalar: int,
 ):
@@ -228,7 +236,7 @@ def train(
     if config.task != 'merged':
         datamodule.prepare_data() # this task is already setup
     else:
-        datamodule = MergedDataModule(**task_dm_kwargs, ship_model=ship_model)
+        datamodule = MergedDataModule(**task_dm_kwargs, ship_model=ship_model, similarity_threshold=similarity_threshold, target_protein_id=target_protein_id)
     datamodule.setup()
 
     # Load model
@@ -324,11 +332,13 @@ def train(
         wandb_logger.experiment.tags = [config.task, config.experiment_id, config.target_featurizer, config.model_size]
 
     if config.task == 'merged' and args.ship_model:
-        # save every epoch
         checkpoint_callback = pl.callbacks.ModelCheckpoint(
+            monitor=config.watch_metric,
+            mode="max" if "mse" not in config.watch_metric else "min",
             save_top_k=-1,
             dirpath=save_dir,
-            verbose=True
+            verbose=True,
+            every_n_epochs=1,
         )
     else:
         checkpoint_callback = pl.callbacks.ModelCheckpoint(
@@ -341,11 +351,7 @@ def train(
 
     callbacks = [checkpoint_callback]
     if args.eval_pcba:
-        callbacks.append(PCBAEvaluationCallback())
-
-    callbacks = [checkpoint_callback]
-    if args.eval_pcba:
-        callbacks.append(PCBAEvaluationCallback())
+        callbacks.append(PCBAEvaluationCallback(target_protein_id=target_protein_id))
 
     # Train model
     trainer = pl.Trainer(
