@@ -52,23 +52,22 @@ Other DTI dataset models can be reproduced by adding ``--task`` to the commandli
 
 ### Lit-PCBA
 ```
-# SPRINT
-ultrafast-train --exp-id LitPCBA --config configs/saprot_agg_config.yaml --epochs 15 --ship-model data/MERGED/huge_data/uniprots_excluded_at_90.txt
-# SPRINT-Average
-ultrafast-train --exp-id LitPCBA --config configs/saprot_agg_config.yaml --prot-proj avg --epochs 15 --ship-model data/MERGED/huge_data/uniprots_excluded_at_90.txt 
-# SPRINT-ProtBert
-ultrafast-train --exp-id LitPCBA --config configs/saprot_agg_config.yaml --target-featurizer ProtBertFeaturizer --epochs 15 --ship-model data/MERGED/huge_data/uniprots_excluded_at_90.txt 
-```
-Adding ``--eval-pcba`` can show the performance on the Lit-PCBA dataset after epoch of training.
-
-### Single Lit-PCBA
-```
 # Setup MMseq2
 conda install -c conda-forge -c bioconda mmseqs2
 # Running Single Lit-PCBA
 ultrafast-train --exp-id LitPCBA --config configs/saprot_agg_config.yaml --task merged --epochs 15 --ship-model --model-size large
 --target-protein-id {TARGET} --similarity-threshold {THRESHOLD} --eval-pcba
+# SPRINT
+ultrafast-train --exp-id LitPCBA --config configs/saprot_agg_config.yaml --epochs 15 --ship-model --model-size large
+--target-protein-id "all"/ none --similarity-threshold 0.9 
+# SPRINT-Average
+ultrafast-train --exp-id LitPCBA --config configs/saprot_agg_config.yaml --prot-proj avg --epochs 15 --ship-model --model-size large
+--target-protein-id "all"/ none --similarity-threshold 0.9 
+# SPRINT-ProtBert
+ultrafast-train --exp-id LitPCBA --config configs/saprot_agg_config.yaml --target-featurizer ProtBertFeaturizer --epochs 15 --ship-model --model-size large
+--target-protein-id "all"/ none --similarity-threshold 0.9
 ```
+Adding ``--eval-pcba`` can show the performance on the Lit-PCBA dataset after epoch of training.
 Targets ids can be found here: ``targets.txt``.
 
 ### TDC Leaderboard
