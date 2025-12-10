@@ -67,7 +67,8 @@ ultrafast-train --exp-id LitPCBA --config configs/saprot_agg_config.yaml --prot-
 ultrafast-train --exp-id LitPCBA --config configs/saprot_agg_config.yaml --target-featurizer ProtBertFeaturizer --epochs 15 --ship-model --model-size large
 --target-protein-id "all"/ none --similarity-threshold 0.9
 ```
-Adding ``--eval-pcba`` can show the performance on the Lit-PCBA dataset after epoch of training.
+Adding ``--eval-pcba`` can show the performance on the Lit-PCBA dataset after epoch of training. 
+
 Targets ids can be found here: ``targets.txt``.
 
 ### TDC Leaderboard
