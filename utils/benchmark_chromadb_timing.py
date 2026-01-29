@@ -93,7 +93,8 @@ def create_temp_csv(data: List[str], column_name: str, output_path: str, delimit
     Uses TSV format to avoid issues with spaces in column names.
     
     For single-column files, pd.read_table with sep=None may not detect tabs correctly.
-    We manually write the file to ensure proper TSV formatting.
+    We add a dummy second column to help delimiter detection, then EmbedDataset will
+    only use the column it needs.
     
     Args:
         data: List of strings to write
@@ -104,23 +105,27 @@ def create_temp_csv(data: List[str], column_name: str, output_path: str, delimit
     Returns:
         Path to the created file
     """
-    # Manually write TSV file to ensure proper formatting
-    # This helps pd.read_table with sep=None detect tabs correctly
-    with open(output_path, 'w') as f:
-        # Write header
-        f.write(f"{column_name}\n")
-        # Write data rows
-        for item in data:
-            f.write(f"{item}\n")
+    # Create DataFrame with the actual column
+    df = pd.DataFrame({column_name: data})
+    
+    # Add a dummy column to help pd.read_table with sep=None detect tabs correctly
+    # This is necessary because csv.Sniffer needs multiple columns to detect delimiters
+    df['_dummy'] = 'dummy'
+    
+    # Write TSV file
+    df.to_csv(output_path, index=False, sep=delimiter)
     
     # Verify the file was created correctly
     if not os.path.exists(output_path):
         raise FileNotFoundError(f"Failed to create file: {output_path}")
     
-    # Verify it can be read with explicit delimiter
-    test_df = pd.read_table(output_path, header=0, sep=delimiter)
+    # Verify it can be read with sep=None (same as EmbedDataset uses)
+    test_df = pd.read_table(output_path, header=0, sep=None)
     if column_name not in test_df.columns:
-        raise ValueError(f"Column '{column_name}' not found when reading with explicit delimiter. Columns: {test_df.columns.tolist()}")
+        raise ValueError(f"Column '{column_name}' not found when reading with sep=None. Columns: {test_df.columns.tolist()}")
+    
+    # Note: The dummy column will be ignored by EmbedDataset since it only uses
+    # the column specified by moltype ('SMILES' or 'Target Sequence')
     
     return output_path
 
