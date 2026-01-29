@@ -405,6 +405,12 @@ def main():
         default=42,
         help='Random seed for reproducibility'
     )
+    parser.add_argument(
+        '--num-workers',
+        type=int,
+        default=-1,
+        help='Number of worker processes for embedding'
+    )
     
     args = parser.parse_args()
     
@@ -564,6 +570,7 @@ def main():
             moltype='target',
             output_path=protein_emb_path,
             batch_size=args.batch_size,
+            num_workers=args.num_workers,
         )
         protein_embedding = np.load(protein_emb_path, allow_pickle=True)
         if len(protein_embedding.shape) > 1:
@@ -607,6 +614,7 @@ def main():
                 moltype='drug',
                 output_path=embeddings_path,
                 batch_size=args.batch_size,
+                num_workers=args.num_workers,
             )
             print(f"Embeddings saved to {embeddings_path}")
             
