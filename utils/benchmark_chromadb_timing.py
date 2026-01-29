@@ -607,6 +607,9 @@ def main():
             # Generate embeddings (save to output_dir)
             print(f"Generating embeddings for {db_size} molecules...")
             embeddings_path = os.path.join(args.output_dir, f'embeddings_{db_size}.npy')
+            if os.path.exists(os.path.join(args.output_dir, f'Morgan_features.lmdb')):
+                # delete the directory
+                shutil.rmtree(os.path.join(args.output_dir, f'Morgan_features.lmdb'))
             embed_molecules(
                 checkpoint=args.checkpoint,
                 device=args.device,
@@ -628,6 +631,7 @@ def main():
                 db_name=db_name,
                 delimiter='\t',
             )
+
             # Store in ChromaDB (only if not embed-only mode, or always to have DB ready)
             if args.mode == 'full':
                 # Time queries for each k value
