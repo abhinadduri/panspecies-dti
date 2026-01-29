@@ -137,7 +137,7 @@ def embed_molecules(
     moltype: str,
     output_path: str,
     batch_size: int = 128,
-    ext: str = "h5",
+    ext: str = "lmdb",
     map_size: int = 10000,
     num_workers: int = -1,
 ) -> str:
@@ -610,19 +610,18 @@ def main():
             )
             print(f"Embeddings saved to {embeddings_path}")
             
+            print(f"Storing {db_size} molecules in ChromaDB...")
+            db_name = f'drugs_{db_size}'
+            store_database(
+                data_file=smiles_csv,
+                embeddings=embeddings_path,
+                moltype='drug',
+                db_dir=args.db_dir,
+                db_name=db_name,
+                delimiter='\t',
+            )
             # Store in ChromaDB (only if not embed-only mode, or always to have DB ready)
             if args.mode == 'full':
-                print(f"Storing {db_size} molecules in ChromaDB...")
-                db_name = f'drugs_{db_size}'
-                store_database(
-                    data_file=smiles_csv,
-                    embeddings=embeddings_path,
-                    moltype='drug',
-                    db_dir=args.db_dir,
-                    db_name=db_name,
-                    delimiter='\t',
-                )
-                
                 # Time queries for each k value
                 results[db_size] = {}
                 for k in [1, 10, 100, 1000]:
@@ -639,18 +638,6 @@ def main():
                     )
                     results[db_size][k] = avg_time
                     print(f"  Average query time: {avg_time:.6f} seconds")
-            else:
-                # embed-only mode: also create database for convenience
-                print(f"Storing {db_size} molecules in ChromaDB...")
-                db_name = f'drugs_{db_size}'
-                store_database(
-                    data_file=smiles_csv,
-                    embeddings=embeddings_path,
-                    moltype='drug',
-                    db_dir=args.db_dir,
-                    db_name=db_name,
-                    delimiter='\t',
-                )
         
         # Generate plot and summary (only for full mode)
         if args.mode == 'full':
