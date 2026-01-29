@@ -580,31 +580,62 @@ def main():
             random.shuffle(shuffled_ids)
             
             valid_smiles = []
+            seen_smiles = set()  # Track unique SMILES to avoid duplicates
             target_size = min(db_size, len(smiles_ids))
             
-            # Iterate through shuffled IDs and collect valid SMILES until we reach target_size
+            # Iterate through shuffled IDs and collect valid, unique SMILES until we reach target_size
             for smile_id in shuffled_ids:
                 if len(valid_smiles) >= target_size:
                     break
                 
                 smile = id_to_smiles[smile_id]
                 if is_valid_smile(smile):
-                    valid_smiles.append(smile)
+                    # Only add if we haven't seen this SMILES string before
+                    if smile not in seen_smiles:
+                        seen_smiles.add(smile)
+                        valid_smiles.append(smile)
             
             if len(valid_smiles) < target_size:
-                print(f"Warning: Only found {len(valid_smiles)} valid SMILES out of {target_size} requested")
+                print(f"Warning: Only found {len(valid_smiles)} unique valid SMILES out of {target_size} requested")
                 if len(valid_smiles) == 0:
                     raise ValueError(f"No valid SMILES found for database size {db_size}")
             elif len(valid_smiles) > target_size:
                 # Trim to exact size if we somehow got more
                 valid_smiles = valid_smiles[:target_size]
             
-            print(f"Collected {len(valid_smiles)} valid SMILES for database size {db_size}")
+            print(f"Collected {len(valid_smiles)} unique valid SMILES for database size {db_size}")
+            
+            # Ensure we have exactly unique SMILES (remove any duplicates that might have slipped through)
+            # This is important because EmbedDataset uses .unique() which deduplicates,
+            # and if there are duplicates, the LMDB will have fewer entries than TSV rows
+            unique_smiles = list(dict.fromkeys(valid_smiles))  # Preserves order while removing duplicates
+            if len(unique_smiles) < len(valid_smiles):
+                print(f"Warning: Removed {len(valid_smiles) - len(unique_smiles)} duplicate SMILES")
+                # If we lost some due to duplicates, try to get more
+                if len(unique_smiles) < target_size:
+                    remaining_needed = target_size - len(unique_smiles)
+                    already_sampled_ids = {smile_id for smile_id, smile in zip(shuffled_ids[:len(valid_smiles)], valid_smiles) if smile in unique_smiles}
+                    for smile_id in shuffled_ids:
+                        if len(unique_smiles) >= target_size:
+                            break
+                        if smile_id in already_sampled_ids:
+                            continue
+                        smile = id_to_smiles[smile_id]
+                        if is_valid_smile(smile) and smile not in unique_smiles:
+                            unique_smiles.append(smile)
+                            already_sampled_ids.add(smile_id)
+            
+            if len(unique_smiles) < target_size:
+                print(f"Warning: Only have {len(unique_smiles)} unique SMILES, requested {target_size}")
+            
+            # Trim to exact size
+            unique_smiles = unique_smiles[:target_size]
+            print(f"Final count: {len(unique_smiles)} unique SMILES for database size {db_size}")
             
             # Create TSV file (save to output_dir for reuse)
             # Using TSV format to avoid issues with spaces in column names
             smiles_csv = os.path.join(args.output_dir, f'smiles_{db_size}.tsv')
-            create_temp_csv(valid_smiles, 'SMILES', smiles_csv, delimiter='\t')
+            create_temp_csv(unique_smiles, 'SMILES', smiles_csv, delimiter='\t')
             
             # Generate embeddings (save to output_dir)
             print(f"Generating embeddings for {db_size} molecules...")
