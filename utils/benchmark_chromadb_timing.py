@@ -92,6 +92,9 @@ def create_temp_csv(data: List[str], column_name: str, output_path: str, delimit
     Create a temporary TSV file with the given data.
     Uses TSV format to avoid issues with spaces in column names.
     
+    For single-column files, pd.read_table with sep=None may not detect tabs correctly.
+    We manually write the file to ensure proper TSV formatting.
+    
     Args:
         data: List of strings to write
         column_name: Name of the column
@@ -101,15 +104,24 @@ def create_temp_csv(data: List[str], column_name: str, output_path: str, delimit
     Returns:
         Path to the created file
     """
-    df = pd.DataFrame({column_name: data})
-    df.to_csv(output_path, index=False, sep=delimiter)
+    # Manually write TSV file to ensure proper formatting
+    # This helps pd.read_table with sep=None detect tabs correctly
+    with open(output_path, 'w') as f:
+        # Write header
+        f.write(f"{column_name}\n")
+        # Write data rows
+        for item in data:
+            f.write(f"{item}\n")
+    
     # Verify the file was created correctly
     if not os.path.exists(output_path):
         raise FileNotFoundError(f"Failed to create file: {output_path}")
-    # Verify the column exists when reading back using the same method as EmbedDataset
-    test_df = pd.read_table(output_path, header=0, sep=None)
+    
+    # Verify it can be read with explicit delimiter
+    test_df = pd.read_table(output_path, header=0, sep=delimiter)
     if column_name not in test_df.columns:
-        raise ValueError(f"Column '{column_name}' not found in created file. Columns: {test_df.columns.tolist()}")
+        raise ValueError(f"Column '{column_name}' not found when reading with explicit delimiter. Columns: {test_df.columns.tolist()}")
+    
     return output_path
 
 
