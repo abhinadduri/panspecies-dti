@@ -105,15 +105,44 @@ def create_temp_csv(data: List[str], column_name: str, output_path: str, delimit
     Returns:
         Path to the created file
     """
+    # Filter out NaN, None, and invalid values
+    filtered_data = []
+    for item in data:
+        if item is None:
+            continue
+        if pd.isna(item):
+            continue
+        if not isinstance(item, str):
+            # Convert to string if possible
+            try:
+                item = str(item)
+            except:
+                continue
+        if len(item.strip()) == 0:
+            continue
+        filtered_data.append(item)
+    
+    if len(filtered_data) == 0:
+        raise ValueError(f"No valid data to write after filtering NaN/None values")
+    
+    if len(filtered_data) < len(data):
+        print(f"Warning: Filtered out {len(data) - len(filtered_data)} invalid values (NaN/None/empty)")
+    
     # Create DataFrame with the actual column
-    df = pd.DataFrame({column_name: data})
+    df = pd.DataFrame({column_name: filtered_data})
+    
+    # Ensure no NaN values remain
+    if df[column_name].isna().any():
+        nan_count = df[column_name].isna().sum()
+        print(f"Warning: Found {nan_count} NaN values, removing them")
+        df = df.dropna(subset=[column_name])
     
     # Add a dummy column to help pd.read_table with sep=None detect tabs correctly
     # This is necessary because csv.Sniffer needs multiple columns to detect delimiters
     df['_dummy'] = 'dummy'
     
     # Write TSV file
-    df.to_csv(output_path, index=False, sep=delimiter)
+    df.to_csv(output_path, index=False, sep=delimiter, na_rep='')
     
     # Verify the file was created correctly
     if not os.path.exists(output_path):
@@ -123,6 +152,14 @@ def create_temp_csv(data: List[str], column_name: str, output_path: str, delimit
     test_df = pd.read_table(output_path, header=0, sep=None)
     if column_name not in test_df.columns:
         raise ValueError(f"Column '{column_name}' not found when reading with sep=None. Columns: {test_df.columns.tolist()}")
+    
+    # Verify no NaN values in the column
+    if test_df[column_name].isna().any():
+        nan_count = test_df[column_name].isna().sum()
+        print(f"Warning: Found {nan_count} NaN values after reading file, removing them")
+        test_df = test_df.dropna(subset=[column_name])
+        # Rewrite the file without NaN values
+        test_df.to_csv(output_path, index=False, sep=delimiter, na_rep='')
     
     # Note: The dummy column will be ignored by EmbedDataset since it only uses
     # the column specified by moltype ('SMILES' or 'Target Sequence')
@@ -599,10 +636,27 @@ def main():
             sampled_ids = random.sample(smiles_ids, min(db_size, len(smiles_ids)))
             sampled_smiles = [id_to_smiles[smile_id] for smile_id in sampled_ids]
             
+            # Filter out any invalid SMILES before creating the file
+            valid_smiles = []
+            for smile in sampled_smiles:
+                if smile is None or pd.isna(smile):
+                    continue
+                if not isinstance(smile, str):
+                    continue
+                if len(smile.strip()) == 0:
+                    continue
+                valid_smiles.append(smile)
+            
+            if len(valid_smiles) < len(sampled_smiles):
+                print(f"Warning: Filtered out {len(sampled_smiles) - len(valid_smiles)} invalid SMILES")
+            
+            if len(valid_smiles) == 0:
+                raise ValueError(f"No valid SMILES found for database size {db_size}")
+            
             # Create TSV file (save to output_dir for reuse)
             # Using TSV format to avoid issues with spaces in column names
             smiles_csv = os.path.join(args.output_dir, f'smiles_{db_size}.tsv')
-            create_temp_csv(sampled_smiles, 'SMILES', smiles_csv, delimiter='\t')
+            create_temp_csv(valid_smiles, 'SMILES', smiles_csv, delimiter='\t')
             
             # Generate embeddings (save to output_dir)
             print(f"Generating embeddings for {db_size} molecules...")
