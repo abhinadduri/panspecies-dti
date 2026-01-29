@@ -166,78 +166,6 @@ def create_temp_csv(data: List[str], column_name: str, output_path: str, delimit
     
     return output_path
 
-
-def embed_molecules(
-    checkpoint: str,
-    device: int,
-    data_file: str,
-    moltype: str,
-    output_path: str,
-    batch_size: int = 128,
-    ext: str = "lmdb",
-    map_size: int = 10000,
-    num_workers: int = -1,
-) -> str:
-    """
-    Wrapper function to create embeddings using the embed() function.
-    
-    Args:
-        checkpoint: Path to model checkpoint
-        device: CUDA device number
-        data_file: Path to CSV file with molecules
-        moltype: "drug" or "target"
-        output_path: Path to save embeddings
-        batch_size: Batch size for embedding
-        ext: File format for features
-        map_size: Map size limit for LMDB
-        num_workers: Number of worker processes
-        
-    Returns:
-        Path to saved embeddings file
-    """
-    embed(
-        checkpoint=checkpoint,
-        device=device,
-        data_file=data_file,
-        moltype=moltype,
-        output_path=output_path,
-        batch_size=batch_size,
-        ext=ext,
-        map_size=map_size,
-        num_workers=num_workers,
-    )
-    return output_path
-
-
-def store_database(
-    data_file: str,
-    embeddings: str,
-    moltype: str,
-    db_dir: str,
-    db_name: str,
-    delimiter: str = ',',
-) -> None:
-    """
-    Wrapper function to store embeddings in ChromaDB.
-    
-    Args:
-        data_file: Path to CSV file with molecules
-        embeddings: Path to embeddings numpy file
-        moltype: "drug" or "target"
-        db_dir: Directory for ChromaDB databases
-        db_name: Name of the database collection
-        delimiter: CSV delimiter
-    """
-    store(
-        data_file=data_file,
-        embeddings=embeddings,
-        moltype=moltype,
-        db_dir=db_dir,
-        db_name=db_name,
-        delimiter=delimiter,
-    )
-
-
 def time_query(
     query_embedding: List[float],
     db_dir: str,
@@ -596,11 +524,11 @@ def main():
     try:
         # Generate protein query embedding (once)
         print("\nGenerating protein query embedding...")
-        # Save protein CSV to output_dir so it can be reused
-        protein_csv = os.path.join(args.output_dir, 'protein_query.csv')
-        create_temp_csv([protein_sequence], 'Target Sequence', protein_csv, delimiter=',')
+        # Save protein TSV to output_dir so it can be reused
+        protein_csv = os.path.join(args.output_dir, 'protein_query.tsv')
+        create_temp_csv([protein_sequence], 'Target Sequence', protein_csv, delimiter='\t')
         protein_emb_path = os.path.join(args.output_dir, 'protein_embedding.npy')
-        embed_molecules(
+        embed(
             checkpoint=args.checkpoint,
             device=args.device,
             data_file=protein_csv,
@@ -608,6 +536,8 @@ def main():
             output_path=protein_emb_path,
             batch_size=args.batch_size,
             num_workers=args.num_workers,
+            ext="lmdb",
+            map_size=1000,
         )
         protein_embedding = np.load(protein_emb_path, allow_pickle=True)
         if len(protein_embedding.shape) > 1:
@@ -633,25 +563,43 @@ def main():
             # Sample SMILES for this database size (use same seed for reproducibility)
             random.seed(args.seed)
             np.random.seed(args.seed)
-            sampled_ids = random.sample(smiles_ids, min(db_size, len(smiles_ids)))
-            sampled_smiles = [id_to_smiles[smile_id] for smile_id in sampled_ids]
             
-            # Filter out any invalid SMILES before creating the file
-            valid_smiles = []
-            for smile in sampled_smiles:
+            # Helper function to check if a SMILES is valid
+            def is_valid_smile(smile):
                 if smile is None or pd.isna(smile):
-                    continue
+                    return False
                 if not isinstance(smile, str):
-                    continue
+                    return False
                 if len(smile.strip()) == 0:
-                    continue
-                valid_smiles.append(smile)
+                    return False
+                return True
             
-            if len(valid_smiles) < len(sampled_smiles):
-                print(f"Warning: Filtered out {len(sampled_smiles) - len(valid_smiles)} invalid SMILES")
+            # Sample SMILES and filter invalid ones, then sample more to reach db_size
+            # Shuffle IDs once for consistent random sampling
+            shuffled_ids = list(smiles_ids)
+            random.shuffle(shuffled_ids)
             
-            if len(valid_smiles) == 0:
-                raise ValueError(f"No valid SMILES found for database size {db_size}")
+            valid_smiles = []
+            target_size = min(db_size, len(smiles_ids))
+            
+            # Iterate through shuffled IDs and collect valid SMILES until we reach target_size
+            for smile_id in shuffled_ids:
+                if len(valid_smiles) >= target_size:
+                    break
+                
+                smile = id_to_smiles[smile_id]
+                if is_valid_smile(smile):
+                    valid_smiles.append(smile)
+            
+            if len(valid_smiles) < target_size:
+                print(f"Warning: Only found {len(valid_smiles)} valid SMILES out of {target_size} requested")
+                if len(valid_smiles) == 0:
+                    raise ValueError(f"No valid SMILES found for database size {db_size}")
+            elif len(valid_smiles) > target_size:
+                # Trim to exact size if we somehow got more
+                valid_smiles = valid_smiles[:target_size]
+            
+            print(f"Collected {len(valid_smiles)} valid SMILES for database size {db_size}")
             
             # Create TSV file (save to output_dir for reuse)
             # Using TSV format to avoid issues with spaces in column names
@@ -664,20 +612,22 @@ def main():
             if os.path.exists(os.path.join(args.output_dir, f'Morgan_features.lmdb')):
                 # delete the directory
                 shutil.rmtree(os.path.join(args.output_dir, f'Morgan_features.lmdb'))
-            embed_molecules(
+            embed(
                 checkpoint=args.checkpoint,
                 device=args.device,
                 data_file=smiles_csv,
                 moltype='drug',
                 output_path=embeddings_path,
                 batch_size=args.batch_size,
+                ext="lmdb",
+                map_size=10000 if db_size < 100000 else 1000000,
                 num_workers=args.num_workers,
             )
             print(f"Embeddings saved to {embeddings_path}")
             
             print(f"Storing {db_size} molecules in ChromaDB...")
             db_name = f'drugs_{db_size}'
-            store_database(
+            store(
                 data_file=smiles_csv,
                 embeddings=embeddings_path,
                 moltype='drug',
