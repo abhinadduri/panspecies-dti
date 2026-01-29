@@ -87,15 +87,16 @@ def select_random_protein(id_to_sequences: Dict) -> Tuple[str, str]:
     return protein_id, protein_sequence
 
 
-def create_temp_csv(data: List[str], column_name: str, output_path: str, delimiter: str = ',') -> str:
+def create_temp_csv(data: List[str], column_name: str, output_path: str, delimiter: str = '\t') -> str:
     """
-    Create a temporary CSV/TSV file with the given data.
+    Create a temporary TSV file with the given data.
+    Uses TSV format to avoid issues with spaces in column names.
     
     Args:
         data: List of strings to write
         column_name: Name of the column
         output_path: Path to save the file
-        delimiter: Delimiter to use (default: comma for CSV format)
+        delimiter: Delimiter to use (default: tab for TSV format)
         
     Returns:
         Path to the created file
@@ -105,7 +106,7 @@ def create_temp_csv(data: List[str], column_name: str, output_path: str, delimit
     # Verify the file was created correctly
     if not os.path.exists(output_path):
         raise FileNotFoundError(f"Failed to create file: {output_path}")
-    # Verify the column exists when reading back
+    # Verify the column exists when reading back using the same method as EmbedDataset
     test_df = pd.read_table(output_path, header=0, sep=None)
     if column_name not in test_df.columns:
         raise ValueError(f"Column '{column_name}' not found in created file. Columns: {test_df.columns.tolist()}")
@@ -447,14 +448,14 @@ def main():
                 print(f"Found existing database: {db_name} ({collection.count()} molecules)")
             except Exception as e:
                 print(f"Warning: Database {db_name} not found. Creating from saved embeddings...")
-                # Load embeddings and CSV, then create database
+                # Load embeddings and TSV, then create database
                 embeddings_path = os.path.join(args.output_dir, f'embeddings_{db_size}.npy')
-                smiles_csv = os.path.join(args.output_dir, f'smiles_{db_size}.csv')
+                smiles_csv = os.path.join(args.output_dir, f'smiles_{db_size}.tsv')
                 
                 if not os.path.exists(embeddings_path):
                     raise FileNotFoundError(f"Embeddings file not found: {embeddings_path}")
                 if not os.path.exists(smiles_csv):
-                    raise FileNotFoundError(f"CSV file not found: {smiles_csv}")
+                    raise FileNotFoundError(f"TSV file not found: {smiles_csv}")
                 
                 store_database(
                     data_file=smiles_csv,
@@ -462,7 +463,7 @@ def main():
                     moltype='drug',
                     db_dir=args.db_dir,
                     db_name=db_name,
-                    delimiter=',',
+                    delimiter='\t',
                 )
             
             # Time queries for each k value
@@ -574,9 +575,10 @@ def main():
             sampled_ids = random.sample(smiles_ids, min(db_size, len(smiles_ids)))
             sampled_smiles = [id_to_smiles[smile_id] for smile_id in sampled_ids]
             
-            # Create CSV file (save to output_dir for reuse)
-            smiles_csv = os.path.join(args.output_dir, f'smiles_{db_size}.csv')
-            create_temp_csv(sampled_smiles, 'SMILES', smiles_csv, delimiter=',')
+            # Create TSV file (save to output_dir for reuse)
+            # Using TSV format to avoid issues with spaces in column names
+            smiles_csv = os.path.join(args.output_dir, f'smiles_{db_size}.tsv')
+            create_temp_csv(sampled_smiles, 'SMILES', smiles_csv, delimiter='\t')
             
             # Generate embeddings (save to output_dir)
             print(f"Generating embeddings for {db_size} molecules...")
@@ -601,7 +603,7 @@ def main():
                     moltype='drug',
                     db_dir=args.db_dir,
                     db_name=db_name,
-                    delimiter=',',
+                    delimiter='\t',
                 )
                 
                 # Time queries for each k value
@@ -630,7 +632,7 @@ def main():
                     moltype='drug',
                     db_dir=args.db_dir,
                     db_name=db_name,
-                    delimiter=',',
+                    delimiter='\t',
                 )
         
         # Generate plot and summary (only for full mode)
