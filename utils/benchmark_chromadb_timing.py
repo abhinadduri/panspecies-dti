@@ -9,6 +9,21 @@ and top-k values by:
 3. Building databases of increasing sizes (10 to 1E8 molecules)
 4. Timing top-k queries (k=1, 10, 100, 1000) for each database size
 5. Generating a plot showing query time vs database size
+
+Modes:
+- 'full': Generate embeddings and run timing benchmarks (default)
+- 'embed-only': Only generate and save embeddings for later use
+- 'timing-only': Load existing embeddings and run timing benchmarks
+
+Example usage:
+  # Generate embeddings only
+  python benchmark_chromadb_timing.py --mode embed-only --checkpoint model.ckpt --output-dir ./embeddings
+  
+  # Run timing benchmarks using existing embeddings
+  python benchmark_chromadb_timing.py --mode timing-only --output-dir ./embeddings --db-dir ./dbs
+  
+  # Do both in one run
+  python benchmark_chromadb_timing.py --mode full --checkpoint model.ckpt
 """
 
 import os
@@ -17,12 +32,13 @@ import time
 import tempfile
 import shutil
 import random
+import json
 import numpy as np
 import pandas as pd
 import chromadb
 import matplotlib.pyplot as plt
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Dict, List, Tuple, Optional
 
 from ultrafast.embed import embed
 from ultrafast.store import store
@@ -236,15 +252,72 @@ def plot_results(
     print(f"Plot saved to {output_path}")
 
 
+def save_metadata(
+    output_dir: str,
+    protein_id: str,
+    protein_sequence: str,
+    database_sizes: List[int],
+    seed: int,
+) -> str:
+    """
+    Save metadata about the embedding run.
+    
+    Args:
+        output_dir: Directory to save metadata
+        protein_id: ID of the protein used for querying
+        protein_sequence: Sequence of the protein used for querying
+        database_sizes: List of database sizes that were embedded
+        seed: Random seed used
+        
+    Returns:
+        Path to saved metadata file
+    """
+    metadata = {
+        'protein_id': protein_id,
+        'protein_sequence': protein_sequence,
+        'database_sizes': database_sizes,
+        'seed': seed,
+    }
+    metadata_path = os.path.join(output_dir, 'metadata.json')
+    with open(metadata_path, 'w') as f:
+        json.dump(metadata, f, indent=2)
+    return metadata_path
+
+
+def load_metadata(output_dir: str) -> Dict:
+    """
+    Load metadata from a previous embedding run.
+    
+    Args:
+        output_dir: Directory containing metadata.json
+        
+    Returns:
+        Dictionary with metadata
+    """
+    metadata_path = os.path.join(output_dir, 'metadata.json')
+    if not os.path.exists(metadata_path):
+        raise FileNotFoundError(f"Metadata file not found: {metadata_path}")
+    with open(metadata_path, 'r') as f:
+        metadata = json.load(f)
+    return metadata
+
+
 def main():
     parser = argparse.ArgumentParser(
         description='Benchmark ChromaDB query timing across different database sizes and top-k values'
     )
     parser.add_argument(
+        '--mode',
+        type=str,
+        choices=['full', 'embed-only', 'timing-only'],
+        default='full',
+        help='Mode: "full" (embed and time), "embed-only" (only generate embeddings), or "timing-only" (use existing embeddings)'
+    )
+    parser.add_argument(
         '--checkpoint',
         type=str,
-        required=True,
-        help='Path to model checkpoint'
+        default=None,
+        help='Path to model checkpoint (required for full and embed-only modes)'
     )
     parser.add_argument(
         '--smiles-path',
@@ -309,13 +382,12 @@ def main():
     
     args = parser.parse_args()
     
-    # Validate checkpoint exists
-    if not os.path.exists(args.checkpoint):
-        raise FileNotFoundError(f"Checkpoint file not found: {args.checkpoint}")
-    
-    # Set random seed
-    random.seed(args.seed)
-    np.random.seed(args.seed)
+    # Validate checkpoint for modes that need it
+    if args.mode in ['full', 'embed-only']:
+        if args.checkpoint is None:
+            raise ValueError("--checkpoint is required for 'full' and 'embed-only' modes")
+        if not os.path.exists(args.checkpoint):
+            raise FileNotFoundError(f"Checkpoint file not found: {args.checkpoint}")
     
     # Create output directories
     os.makedirs(args.db_dir, exist_ok=True)
@@ -325,91 +397,64 @@ def main():
     if args.plot_output is None:
         args.plot_output = os.path.join(args.output_dir, 'timing_plot.png')
     
-    # Load data
-    id_to_smiles, id_to_sequences = load_data(args.smiles_path, args.sequences_path)
-    
-    # Select random protein
-    protein_id, protein_sequence = select_random_protein(id_to_sequences)
-    
-    # Create temporary directory for intermediate files
-    temp_dir = tempfile.mkdtemp(prefix='chromadb_benchmark_')
-    print(f"Using temporary directory: {temp_dir}")
-    
-    try:
-        # Generate protein query embedding (once)
-        print("\nGenerating protein query embedding...")
-        protein_csv = os.path.join(temp_dir, 'protein_query.csv')
-        create_temp_csv([protein_sequence], 'Target Sequence', protein_csv)
-        protein_emb_path = os.path.join(temp_dir, 'protein_embedding.npy')
-        embed_molecules(
-            checkpoint=args.checkpoint,
-            device=args.device,
-            data_file=protein_csv,
-            moltype='target',
-            output_path=protein_emb_path,
-            batch_size=args.batch_size,
-        )
+    # Handle timing-only mode: load existing embeddings and metadata
+    if args.mode == 'timing-only':
+        print("Mode: timing-only - Loading existing embeddings and metadata...")
+        metadata = load_metadata(args.output_dir)
+        protein_id = metadata['protein_id']
+        protein_sequence = metadata['protein_sequence']
+        database_sizes = metadata['database_sizes']
+        # Use the seed from when embeddings were created (for consistency)
+        random.seed(metadata['seed'])
+        np.random.seed(metadata['seed'])
+        
+        # Load protein embedding
+        protein_emb_path = os.path.join(args.output_dir, 'protein_embedding.npy')
+        if not os.path.exists(protein_emb_path):
+            raise FileNotFoundError(f"Protein embedding not found: {protein_emb_path}")
         protein_embedding = np.load(protein_emb_path, allow_pickle=True)
         if len(protein_embedding.shape) > 1:
             protein_embedding = protein_embedding[0]
         protein_embedding = protein_embedding.tolist()
-        print("Protein embedding generated")
-        
-        # Define database sizes (logarithmic progression)
-        max_available = len(id_to_smiles)
-        database_sizes = []
-        for size in [10, 100, 1000, 10000, 100000, 1000000, 10000000, int(1e8)]:
-            if size <= min(max_available, args.max_size):
-                database_sizes.append(size)
-        
-        if not database_sizes:
-            raise ValueError(f"No valid database sizes found. Available SMILES: {max_available}, Max size: {args.max_size}")
-        
-        print(f"\nDatabase sizes to test: {database_sizes}")
-        print(f"Top-k values to test: [1, 10, 100, 1000]")
+        print(f"Loaded protein embedding for protein: {protein_id}")
         
         # Results dictionary: {database_size: {k: time}}
         results = {}
         
-        # Get all SMILES IDs
-        smiles_ids = list(id_to_smiles.keys())
+        # Time queries for each database size
+        print(f"\nDatabase sizes to test: {database_sizes}")
+        print(f"Top-k values to test: [1, 10, 100, 1000]")
         
-        # Benchmark each database size
         for db_size in database_sizes:
             print(f"\n{'='*60}")
-            print(f"Processing database size: {db_size}")
+            print(f"Timing queries for database size: {db_size}")
             print(f"{'='*60}")
             
-            # Sample SMILES for this database size
-            sampled_ids = random.sample(smiles_ids, min(db_size, len(smiles_ids)))
-            sampled_smiles = [id_to_smiles[smile_id] for smile_id in sampled_ids]
-            
-            # Create CSV file
-            smiles_csv = os.path.join(temp_dir, f'smiles_{db_size}.csv')
-            create_temp_csv(sampled_smiles, 'SMILES', smiles_csv)
-            
-            # Generate embeddings
-            print(f"Generating embeddings for {db_size} molecules...")
-            embeddings_path = os.path.join(temp_dir, f'embeddings_{db_size}.npy')
-            embed_molecules(
-                checkpoint=args.checkpoint,
-                device=args.device,
-                data_file=smiles_csv,
-                moltype='drug',
-                output_path=embeddings_path,
-                batch_size=args.batch_size,
-            )
-            
-            # Store in ChromaDB
-            print(f"Storing {db_size} molecules in ChromaDB...")
             db_name = f'drugs_{db_size}'
-            store_database(
-                data_file=smiles_csv,
-                embeddings=embeddings_path,
-                moltype='drug',
-                db_dir=args.db_dir,
-                db_name=db_name,
-            )
+            
+            # Check if database exists
+            client = chromadb.PersistentClient(path=args.db_dir)
+            try:
+                collection = client.get_collection(name=db_name)
+                print(f"Found existing database: {db_name} ({collection.count()} molecules)")
+            except Exception as e:
+                print(f"Warning: Database {db_name} not found. Creating from saved embeddings...")
+                # Load embeddings and CSV, then create database
+                embeddings_path = os.path.join(args.output_dir, f'embeddings_{db_size}.npy')
+                smiles_csv = os.path.join(args.output_dir, f'smiles_{db_size}.csv')
+                
+                if not os.path.exists(embeddings_path):
+                    raise FileNotFoundError(f"Embeddings file not found: {embeddings_path}")
+                if not os.path.exists(smiles_csv):
+                    raise FileNotFoundError(f"CSV file not found: {smiles_csv}")
+                
+                store_database(
+                    data_file=smiles_csv,
+                    embeddings=embeddings_path,
+                    moltype='drug',
+                    db_dir=args.db_dir,
+                    db_name=db_name,
+                )
             
             # Time queries for each k value
             results[db_size] = {}
@@ -447,10 +492,170 @@ def main():
                     row.append("N/A")
             print(" ".join(row))
         
+        return
+    
+    # Handle embed-only and full modes
+    # Set random seed
+    random.seed(args.seed)
+    np.random.seed(args.seed)
+    
+    # Load data
+    id_to_smiles, id_to_sequences = load_data(args.smiles_path, args.sequences_path)
+    
+    # Select random protein
+    protein_id, protein_sequence = select_random_protein(id_to_sequences)
+    
+    # Define database sizes (logarithmic progression)
+    max_available = len(id_to_smiles)
+    database_sizes = []
+    for size in [10, 100, 1000, 10000, 100000, 1000000, 10000000, int(1e8)]:
+        if size <= min(max_available, args.max_size):
+            database_sizes.append(size)
+    
+    if not database_sizes:
+        raise ValueError(f"No valid database sizes found. Available SMILES: {max_available}, Max size: {args.max_size}")
+    
+    print(f"\nDatabase sizes to process: {database_sizes}")
+    
+    # Create temporary directory for intermediate files (only used during embedding in full mode)
+    temp_dir = None
+    if args.mode == 'full':
+        temp_dir = tempfile.mkdtemp(prefix='chromadb_benchmark_')
+        print(f"Using temporary directory: {temp_dir}")
+    
+    try:
+        # Generate protein query embedding (once)
+        print("\nGenerating protein query embedding...")
+        # Save protein CSV to output_dir so it can be reused
+        protein_csv = os.path.join(args.output_dir, 'protein_query.csv')
+        create_temp_csv([protein_sequence], 'Target Sequence', protein_csv)
+        protein_emb_path = os.path.join(args.output_dir, 'protein_embedding.npy')
+        embed_molecules(
+            checkpoint=args.checkpoint,
+            device=args.device,
+            data_file=protein_csv,
+            moltype='target',
+            output_path=protein_emb_path,
+            batch_size=args.batch_size,
+        )
+        protein_embedding = np.load(protein_emb_path, allow_pickle=True)
+        if len(protein_embedding.shape) > 1:
+            protein_embedding = protein_embedding[0]
+        protein_embedding_list = protein_embedding.tolist()
+        print("Protein embedding generated and saved")
+        
+        # Save metadata
+        save_metadata(args.output_dir, protein_id, protein_sequence, database_sizes, args.seed)
+        
+        # Get all SMILES IDs
+        smiles_ids = list(id_to_smiles.keys())
+        
+        # Results dictionary: {database_size: {k: time}}
+        results = {}
+        
+        # Process each database size
+        for db_size in database_sizes:
+            print(f"\n{'='*60}")
+            print(f"Processing database size: {db_size}")
+            print(f"{'='*60}")
+            
+            # Sample SMILES for this database size (use same seed for reproducibility)
+            random.seed(args.seed)
+            np.random.seed(args.seed)
+            sampled_ids = random.sample(smiles_ids, min(db_size, len(smiles_ids)))
+            sampled_smiles = [id_to_smiles[smile_id] for smile_id in sampled_ids]
+            
+            # Create CSV file (save to output_dir for reuse)
+            smiles_csv = os.path.join(args.output_dir, f'smiles_{db_size}.csv')
+            create_temp_csv(sampled_smiles, 'SMILES', smiles_csv)
+            
+            # Generate embeddings (save to output_dir)
+            print(f"Generating embeddings for {db_size} molecules...")
+            embeddings_path = os.path.join(args.output_dir, f'embeddings_{db_size}.npy')
+            embed_molecules(
+                checkpoint=args.checkpoint,
+                device=args.device,
+                data_file=smiles_csv,
+                moltype='drug',
+                output_path=embeddings_path,
+                batch_size=args.batch_size,
+            )
+            print(f"Embeddings saved to {embeddings_path}")
+            
+            # Store in ChromaDB (only if not embed-only mode, or always to have DB ready)
+            if args.mode == 'full':
+                print(f"Storing {db_size} molecules in ChromaDB...")
+                db_name = f'drugs_{db_size}'
+                store_database(
+                    data_file=smiles_csv,
+                    embeddings=embeddings_path,
+                    moltype='drug',
+                    db_dir=args.db_dir,
+                    db_name=db_name,
+                )
+                
+                # Time queries for each k value
+                results[db_size] = {}
+                for k in [1, 10, 100, 1000]:
+                    if k > db_size:
+                        print(f"Skipping k={k} for database size {db_size} (k > db_size)")
+                        continue
+                    print(f"Timing query for k={k}...")
+                    avg_time = time_query(
+                        query_embedding=protein_embedding_list,
+                        db_dir=args.db_dir,
+                        db_name=db_name,
+                        k=k,
+                        num_trials=args.num_trials,
+                    )
+                    results[db_size][k] = avg_time
+                    print(f"  Average query time: {avg_time:.6f} seconds")
+            else:
+                # embed-only mode: also create database for convenience
+                print(f"Storing {db_size} molecules in ChromaDB...")
+                db_name = f'drugs_{db_size}'
+                store_database(
+                    data_file=smiles_csv,
+                    embeddings=embeddings_path,
+                    moltype='drug',
+                    db_dir=args.db_dir,
+                    db_name=db_name,
+                )
+        
+        # Generate plot and summary (only for full mode)
+        if args.mode == 'full':
+            print(f"\n{'='*60}")
+            print("Generating plot...")
+            print(f"{'='*60}")
+            plot_results(results, args.plot_output)
+            
+            # Print summary
+            print("\nSummary of results:")
+            print(f"{'Database Size':<15} {'k=1':<15} {'k=10':<15} {'k=100':<15} {'k=1000':<15}")
+            print("-" * 75)
+            for db_size in sorted(results.keys()):
+                row = [f"{db_size:<15}"]
+                for k in [1, 10, 100, 1000]:
+                    if k in results[db_size]:
+                        row.append(f"{results[db_size][k]:.6f}")
+                    else:
+                        row.append("N/A")
+                print(" ".join(row))
+        else:
+            print(f"\n{'='*60}")
+            print("Embedding complete!")
+            print(f"{'='*60}")
+            print(f"Embeddings saved to: {args.output_dir}")
+            print(f"Databases created in: {args.db_dir}")
+            print(f"\nTo run timing benchmarks later, use:")
+            script_name = os.path.basename(__file__)
+            print(f"  python {script_name} --mode timing-only --output-dir {args.output_dir} --db-dir {args.db_dir}")
+        
     finally:
         # Clean up temporary files
-        print(f"\nCleaning up temporary directory: {temp_dir}")
-        shutil.rmtree(temp_dir, ignore_errors=True)
+        if temp_dir is not None and os.path.exists(temp_dir):
+            print(f"\nCleaning up temporary directory: {temp_dir}")
+            shutil.rmtree(temp_dir, ignore_errors=True)
 
 
 if __name__ == '__main__':
