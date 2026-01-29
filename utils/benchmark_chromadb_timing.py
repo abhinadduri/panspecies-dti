@@ -87,21 +87,28 @@ def select_random_protein(id_to_sequences: Dict) -> Tuple[str, str]:
     return protein_id, protein_sequence
 
 
-def create_temp_csv(data: List[str], column_name: str, output_path: str, delimiter: str = '\t') -> str:
+def create_temp_csv(data: List[str], column_name: str, output_path: str, delimiter: str = ',') -> str:
     """
-    Create a temporary TSV/CSV file with the given data.
+    Create a temporary CSV/TSV file with the given data.
     
     Args:
         data: List of strings to write
         column_name: Name of the column
         output_path: Path to save the file
-        delimiter: Delimiter to use (default: tab for TSV format)
+        delimiter: Delimiter to use (default: comma for CSV format)
         
     Returns:
         Path to the created file
     """
     df = pd.DataFrame({column_name: data})
     df.to_csv(output_path, index=False, sep=delimiter)
+    # Verify the file was created correctly
+    if not os.path.exists(output_path):
+        raise FileNotFoundError(f"Failed to create file: {output_path}")
+    # Verify the column exists when reading back
+    test_df = pd.read_table(output_path, header=0, sep=None)
+    if column_name not in test_df.columns:
+        raise ValueError(f"Column '{column_name}' not found in created file. Columns: {test_df.columns.tolist()}")
     return output_path
 
 
@@ -440,14 +447,14 @@ def main():
                 print(f"Found existing database: {db_name} ({collection.count()} molecules)")
             except Exception as e:
                 print(f"Warning: Database {db_name} not found. Creating from saved embeddings...")
-                # Load embeddings and TSV, then create database
+                # Load embeddings and CSV, then create database
                 embeddings_path = os.path.join(args.output_dir, f'embeddings_{db_size}.npy')
-                smiles_csv = os.path.join(args.output_dir, f'smiles_{db_size}.tsv')
+                smiles_csv = os.path.join(args.output_dir, f'smiles_{db_size}.csv')
                 
                 if not os.path.exists(embeddings_path):
                     raise FileNotFoundError(f"Embeddings file not found: {embeddings_path}")
                 if not os.path.exists(smiles_csv):
-                    raise FileNotFoundError(f"TSV file not found: {smiles_csv}")
+                    raise FileNotFoundError(f"CSV file not found: {smiles_csv}")
                 
                 store_database(
                     data_file=smiles_csv,
@@ -455,7 +462,7 @@ def main():
                     moltype='drug',
                     db_dir=args.db_dir,
                     db_name=db_name,
-                    delimiter='\t',
+                    delimiter=',',
                 )
             
             # Time queries for each k value
@@ -528,9 +535,9 @@ def main():
     try:
         # Generate protein query embedding (once)
         print("\nGenerating protein query embedding...")
-        # Save protein TSV to output_dir so it can be reused
-        protein_csv = os.path.join(args.output_dir, 'protein_query.tsv')
-        create_temp_csv([protein_sequence], 'Target Sequence', protein_csv, delimiter='\t')
+        # Save protein CSV to output_dir so it can be reused
+        protein_csv = os.path.join(args.output_dir, 'protein_query.csv')
+        create_temp_csv([protein_sequence], 'Target Sequence', protein_csv, delimiter=',')
         protein_emb_path = os.path.join(args.output_dir, 'protein_embedding.npy')
         embed_molecules(
             checkpoint=args.checkpoint,
@@ -567,9 +574,9 @@ def main():
             sampled_ids = random.sample(smiles_ids, min(db_size, len(smiles_ids)))
             sampled_smiles = [id_to_smiles[smile_id] for smile_id in sampled_ids]
             
-            # Create TSV file (save to output_dir for reuse)
-            smiles_csv = os.path.join(args.output_dir, f'smiles_{db_size}.tsv')
-            create_temp_csv(sampled_smiles, 'SMILES', smiles_csv, delimiter='\t')
+            # Create CSV file (save to output_dir for reuse)
+            smiles_csv = os.path.join(args.output_dir, f'smiles_{db_size}.csv')
+            create_temp_csv(sampled_smiles, 'SMILES', smiles_csv, delimiter=',')
             
             # Generate embeddings (save to output_dir)
             print(f"Generating embeddings for {db_size} molecules...")
@@ -594,6 +601,7 @@ def main():
                     moltype='drug',
                     db_dir=args.db_dir,
                     db_name=db_name,
+                    delimiter=',',
                 )
                 
                 # Time queries for each k value
@@ -622,7 +630,7 @@ def main():
                     moltype='drug',
                     db_dir=args.db_dir,
                     db_name=db_name,
-                    delimiter='\t',
+                    delimiter=',',
                 )
         
         # Generate plot and summary (only for full mode)
