@@ -199,7 +199,27 @@ def time_query(
         end_time = time.perf_counter()
         times.append(end_time - start_time)
     
-    return np.mean(times)
+    # check for extreme outliers and remove them, then rerun the query to get num_trials again
+    # first check for outliers
+    q1 = np.percentile(times, 25)
+    q3 = np.percentile(times, 75)
+    iqr = q3 - q1
+    outliers = []
+    for time in times:
+        if time < q1 - 1.5 * iqr or time > q3 + 1.5 * iqr:
+            outliers.append(time)
+    if len(outliers) > 0:
+        print(f"Warning: {len(outliers)} outliers found, removing them")
+        times = [time for time in times if time not in outliers]
+        for _ in range(len(outliers)):
+            start_time = time.perf_counter()
+            results = collection.query(
+                query_embeddings=[query_embedding],
+                n_results=k,
+            )
+            end_time = time.perf_counter()
+            times.append(end_time - start_time)
+    return np.mean(times), np.min(times), np.max(times)
 
 
 def plot_results(
@@ -676,7 +696,7 @@ def main():
                         print(f"Skipping k={k} for database size {db_size} (k > db_size)")
                         continue
                     print(f"Timing query for k={k}...")
-                    avg_time = time_query(
+                    avg_time, min_time, max_time = time_query(
                         query_embedding=protein_embedding_list,
                         db_dir=args.db_dir,
                         db_name=db_name,
@@ -684,7 +704,7 @@ def main():
                         num_trials=args.num_trials,
                     )
                     results[db_size][k] = avg_time
-                    print(f"  Average query time: {avg_time:.6f} seconds")
+                    print(f"  Average query time: {avg_time:.6f} seconds, min: {min_time:.6f} seconds, max: {max_time:.6f} seconds")
         
         # Generate plot and summary (only for full mode)
         if args.mode == 'full':
