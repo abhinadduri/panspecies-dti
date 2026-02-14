@@ -26,6 +26,7 @@ dependencies = [
     "chromadb==0.5.5",
     "gdown==5.2.0",
     "ml-pyxis @ git+https://github.com/vicolab/ml-pyxis.git@master",
+    "clamp @ git+https://github.com/Queimo/clamp.git@main"
 ]
 
 [project.scripts]
