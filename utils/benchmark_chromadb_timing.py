@@ -205,9 +205,9 @@ def time_query(
     q3 = np.percentile(times, 75)
     iqr = q3 - q1
     outliers = []
-    for time in times:
-        if time < q1 - 1.5 * iqr or time > q3 + 1.5 * iqr:
-            outliers.append(time)
+    for t in times:
+        if t < q1 - 1.5 * iqr or t > q3 + 1.5 * iqr:
+            outliers.append(t)
     if len(outliers) > 0:
         print(f"Warning: {len(outliers)} outliers found, removing them")
         times = [time for time in times if time not in outliers]
@@ -251,7 +251,6 @@ def plot_results(
             ax.plot(sizes_for_k, times_for_k, marker='o', label=f'k={k}', color=color, linewidth=2)
     
     ax.set_xscale('log')
-    ax.set_yscale('log')
     ax.set_xlabel('Number of Molecules in Database', fontsize=12)
     ax.set_ylabel('Query Time (seconds)', fontsize=12)
     ax.set_title('ChromaDB Query Performance vs Database Size', fontsize=14)
@@ -481,7 +480,7 @@ def main():
                     print(f"Skipping k={k} for database size {db_size} (k > db_size)")
                     continue
                 print(f"Timing query for k={k}...")
-                avg_time = time_query(
+                avg_time, min_time, max_time = time_query(
                     query_embedding=protein_embedding,
                     db_dir=args.db_dir,
                     db_name=db_name,
@@ -489,7 +488,7 @@ def main():
                     num_trials=args.num_trials,
                 )
                 results[db_size][k] = avg_time
-                print(f"  Average query time: {avg_time:.6f} seconds")
+                print(f"  Average query time: {avg_time:.6f} seconds, min: {min_time:.6f}, max: {max_time:.6f}")
         
         # Generate plot
         print(f"\n{'='*60}")
