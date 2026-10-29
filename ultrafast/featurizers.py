@@ -23,10 +23,8 @@ from rdkit.Chem import AllChem
 from rdkit import DataStructs
 from rdkit.Chem.rdmolops import RDKFingerprint
 from rdkit.Chem import rdFingerprintGenerator
-import clamp
 from ultrafast.utils import canonicalize
 from ultrafast.saprot_utils import load_esm_saprot
-
 
 def sanitize_string(s):
     if isinstance(s, str):
@@ -485,17 +483,6 @@ class MorganFeaturizer(Featurizer):
             ]
             return torch.stack(all_feats, dim=0)
 
-          
-class CLAMPFeaturizer(Featurizer):
-    def __init__(self, shape: int = 768, save_dir: Path = Path().absolute(), ext: str = "lmdb", batch_size: int = 32, **kwargs):
-        super().__init__("CLAMP", shape, "drug", save_dir, ext, batch_size, **kwargs)
-
-        self._model = clamp.CLAMP(device="cpu")
-        self._model.eval()
-
-    def _transform(self, batch_smiles: List[str]) -> torch.Tensor:
-        return self._model.encode_smiles(batch_smiles)
-
 # using the average of the embeddings like the paper does
 class MoLFormerFeaturizer(Featurizer):
     def __init__(self, shape: int = 768, save_dir: Path = Path().absolute(), ext: str = "lmdb", batch_size: int = 32, n_jobs=-1):
@@ -547,7 +534,6 @@ class MoLFormerMorganFeaturizer(Featurizer):
         if self.morgan is None:
             self.morgan = MorganFeaturizer(save_dir=self._save_path.parent, ext=self.ext)
             self.morgan.preload([])
-
 
 class ProtBertFeaturizer(Featurizer):
     def __init__(self, save_dir: Path = Path().absolute(), per_tok=False, **kwargs):
