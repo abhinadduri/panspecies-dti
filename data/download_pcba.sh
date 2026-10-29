@@ -4,7 +4,7 @@
 if [ -d "lit_pcba" ]; then
     echo "lit_pcba folder already exists. Skipping download and extraction."
 else
-    wget -O "full_data.tgz" http://drugdesign.unistra.fr/LIT-PCBA/Files/full_data.tgz
+    wget -O "full_data.tgz" https://drugdesign.unistra.fr/LIT-PCBA/Files/full_data.tgz
     mkdir lit_pcba
     tar -xzf full_data.tgz -C lit_pcba
     rm full_data.tgz

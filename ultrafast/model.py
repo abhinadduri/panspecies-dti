@@ -67,10 +67,17 @@ class DrugTargetCoembeddingLightning(pl.LightningModule):
         self.contrastive = contrastive
         self.args = args
 
-        self.drug_projector = nn.Sequential(
-            nn.Linear(self.drug_dim, self.latent_dim), self.activation()
-        )
-        nn.init.xavier_normal_(self.drug_projector[0].weight)
+        if 'Seq' not in args.drug_featurizer:
+            self.drug_projector = nn.Sequential(
+                nn.Linear(self.drug_dim, self.latent_dim), self.activation()
+            )
+            nn.init.xavier_normal_(self.drug_projector[0].weight)
+        else:
+            self.drug_projector = nn.Sequential(
+                    Learned_Aggregation_Layer(self.drug_dim, num_heads=self.args.num_heads_agg, attn_drop=dropout, proj_drop=dropout),
+                    nn.Linear(self.drug_dim, self.latent_dim),
+                    self.activation()
+                    )
 
         if prot_proj == "avg":
             protein_projector=nn.Sequential(AverageNonZeroVectors(), nn.Linear(self.target_dim, self.latent_dim))

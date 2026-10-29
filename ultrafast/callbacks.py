@@ -15,12 +15,17 @@ from torch.utils.data import Dataset, DataLoader
 from ultrafast.datamodules import EmbedInMemoryDataset, embed_collate_fn
 from ultrafast.utils import get_featurizer, CalcAUC, CalcBEDROC, CalcEnrichment
 
-def eval_pcba(trainer, model, pcba_dir='data/lit_pcba'):
+def eval_pcba(trainer, model, pcba_dir='data/lit_pcba', target_protein_id="all"):
     """
     Evaluate the model checkpoint against the lit-pcba dataset.
-
     # If structure aware ckpt, use the correct token file. detect this automatically
     # Assert an error if drug/lit_pcba does not exist, prompting the user to run data/download_pcba.py
+
+    Args:
+        trainer: PyTorch Lightning trainer
+        model: Model to evaluate
+        pcba_dir: Directory containing Lit-PCBA dataset
+        target_protein_id: Optional protein ID to evaluate. If "all", evaluate all proteins.
     """
 
     all_targets = []
@@ -28,7 +33,16 @@ def eval_pcba(trainer, model, pcba_dir='data/lit_pcba'):
     all_bedrocs = []
     all_efs = {0.005: [], 0.01: [], 0.05: []}
 
-    for target_folder in glob.glob(f'{pcba_dir}/*'):
+    # Decide which target folders to evaluate
+    if str(target_protein_id).lower() == "all":
+        target_folders = [f for f in glob.glob(f'{pcba_dir}/*') if os.path.isdir(f)]
+    else:
+        target_folder = os.path.join(pcba_dir, target_protein_id)
+        if not os.path.isdir(target_folder):
+            raise ValueError(f"Target protein {target_protein_id} not found in {pcba_dir}")
+        target_folders = [target_folder]
+
+    for target_folder in target_folders:
         if not os.path.isdir(target_folder):
             continue
 
@@ -56,6 +70,7 @@ def eval_pcba(trainer, model, pcba_dir='data/lit_pcba'):
             model.args.drug_featurizer,
             save_dir=out_dir,
             batch_size=2048 * 8,
+            ext="lmdb",
         )
         drug_featurizer = drug_featurizer.to(device)
 
@@ -81,6 +96,7 @@ def eval_pcba(trainer, model, pcba_dir='data/lit_pcba'):
             model.args.target_featurizer,
             save_dir=out_dir,
             batch_size=16,
+            ext="lmdb",
         )
         target_featurizer = target_featurizer.to(device)
 
@@ -90,8 +106,8 @@ def eval_pcba(trainer, model, pcba_dir='data/lit_pcba'):
         target_embeddings = []
         with torch.no_grad():
             for seqs in tqdm(dataloader, desc="Embedding", total=len(dataloader)):
-                seqs =seqs .to(device)
-                emb = model.embed(seqs , sample_type='target')
+                seqs = seqs.to(device)
+                emb = model.embed(seqs, sample_type='target')
                 target_embeddings.append(emb.cpu().numpy())
         target_embeddings = np.concatenate(target_embeddings, axis=0)
 
@@ -115,41 +131,52 @@ def eval_pcba(trainer, model, pcba_dir='data/lit_pcba'):
         bedroc = CalcBEDROC(scores, 1, 85.0)
         auroc = CalcAUC(scores, 1)
         efs = CalcEnrichment(scores, 1, [0.005, 0.01, 0.05])
-        
+
         all_targets.append(target)
         for i, ef in enumerate(efs):
             all_efs[list(all_efs.keys())[i]].append(ef)
         all_bedrocs.append(bedroc)
         all_aurocs.append(auroc)
 
-        # Log individual target metrics
-        if trainer.logger:
-            trainer.logger.experiment.log({
-                f"pcba/{target}/AUROC": auroc,
-                f"pcba/{target}/BEDROC_85": bedroc,
-                f"pcba/{target}/EF_0.005": efs[0],
-                f"pcba/{target}/EF_0.01": efs[1],
-                f"pcba/{target}/EF_0.05": efs[2],
-            }, step=trainer.global_step)
-        
+        # Log individual target metrics using PyTorch Lightning's log method
+        model.log(f"pcba/{target}/AUROC", auroc, on_epoch=True, logger=True)
+        model.log(f"pcba/{target}/BEDROC_85", bedroc, on_epoch=True, logger=True)
+        model.log(f"pcba/{target}/EF_0.005", efs[0], on_epoch=True, logger=True)
+        model.log(f"pcba/{target}/EF_0.01", efs[1], on_epoch=True, logger=True)
+        model.log(f"pcba/{target}/EF_0.05", efs[2], on_epoch=True, logger=True)
 
-    # Calculate and log average metrics
+        current_epoch = trainer.current_epoch
+        print(f"\n{'='*60}")
+        print(f"[PCBA Eval - Epoch {current_epoch}] Target: {target}")
+        print(f"{'='*60}")
+        print(f"  AUROC:     {auroc:.4f}")
+        print(f"  BEDROC_85: {bedroc:.4f}")
+        print(f"  EF_0.005:  {efs[0]:.4f}")
+        print(f"  EF_0.01:   {efs[1]:.4f}")
+        print(f"  EF_0.05:   {efs[2]:.4f}")
+        print(f"{'='*60}\n")
+
     avg_auroc = np.mean(all_aurocs)
     avg_bedroc = np.mean(all_bedrocs)
     avg_efs = {k: np.mean(v) for k, v in all_efs.items()}
 
-    if trainer.logger:
-        trainer.logger.experiment.log({
-            "pcba/avg_AUROC": avg_auroc,
-            "pcba/avg_BEDROC_85": avg_bedroc,
-            "pcba/avg_EF_0.005": avg_efs[0.005],
-            "pcba/avg_EF_0.01": avg_efs[0.01],
-            "pcba/avg_EF_0.05": avg_efs[0.05],
-        }, step=trainer.global_step)
+    # Log average metrics for multiple targets only
+    if len(target_folders) > 1 and hasattr(model, "log"):
+        current_epoch = trainer.current_epoch
 
+        model.log("pcba/avg_AUROC", avg_auroc, on_epoch=True, prog_bar=True, logger=True)
+        model.log("pcba/avg_BEDROC_85", avg_bedroc, on_epoch=True, prog_bar=False, logger=True)
+        for k, v in sorted(avg_efs.items()):
+            model.log(f"pcba/avg_EF_{k}", v, on_epoch=True, prog_bar=False, logger=True)
 
-    print(f"Average EF: {avg_efs}")
-    print(f"Average BEDROC_85: {avg_bedroc:.3f}")
-    print(f"Average AUROC: {avg_auroc:.3f}")
+        print(f"\n{'='*60}")
+        print(f"[PCBA Eval - Epoch {current_epoch}] AVERAGE ACROSS {len(target_folders)} TARGETS")
+        print(f"{'='*60}")
+        print(f"  Average AUROC:     {avg_auroc:.4f}")
+        print(f"  Average BEDROC_85: {avg_bedroc:.4f}")
+        for k, v in sorted(avg_efs.items()):
+            print(f"  Average EF_{k}:    {v:.4f}")
+        print(f"{'='*60}\n")
 
-
+def eval_vsds(trainer, model, vsds_dir):
+    return eval_pcba(trainer, model, pcba_dir=vsds_dir)
