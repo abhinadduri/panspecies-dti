@@ -21,7 +21,10 @@ jobs:
       with:
         python-version: ${{ matrix.python-version }}
     - name: Install dependencies
+      env:
+        PIP_CONSTRAINT: ${{ runner.temp }}/build-constraints.txt
       run: |
+        echo "setuptools<81" > "$PIP_CONSTRAINT"
         python -m pip install --upgrade pip
         python -m pip install .
     - name: Test with unittest
